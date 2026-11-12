@@ -253,10 +253,14 @@ static uint8_t frame_of(uint8_t dir, uint8_t moving)
 static uint8_t toward(uint8_t at, uint8_t to)
 {
     uint8_t d = at > to ? at - to : to - at;
+    if (!d)
+        return at;
     if (d > UNIT)
         return to;
-    if (d > 3)
-        d = 3;
+    /* A walker goes 1-2 units a jiffy, and its place comes every 2-4: at
+     * about its own pace (faster only when well behind), not 3 units at
+     * once and then a wait (a stop-go shuffle). */
+    d = d > 8 ? 3 : d > 4 ? 2 : 1;
     return at > to ? at - d : at + d;
 }
 

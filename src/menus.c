@@ -59,7 +59,7 @@ void title(void)
 
 void name_entry(void)
 {
-    uint8_t n = 0;
+    uint8_t n = 0, redraw = 1;
     char c;
     gfx_begin();
     gfx_row(6, ROW_BIG, PAL_MENU);
@@ -68,20 +68,38 @@ void name_entry(void)
     centre(14, NAME_HELP, 0, 40);
     gfx_show();
     my_name[0] = 0;
+#ifdef __NABU__
+    /* the Internet Adapter's player name, to keep (RETURN or fire) or rub out */
+    {
+        extern char name_prefill[];
+        strcpy(my_name, name_prefill);
+        n = strlen(my_name);
+    }
+#endif
     for (;;) {
-        gfx_clear_row(10);
-        gfx_text(10, 6, my_name, 1);
-        if (n < NAME_LEN)
-            gfx_text(10, 6 + n, "-", 0);
+        /* Only when it changes, and over what was there (no clearing first):
+         * a row cleared and rewritten each frame can be caught blank by the
+         * beam, every frame, once the rewrite takes long enough. */
+        if (redraw) {
+            gfx_text(10, 6, my_name, 1);
+            gfx_text(10, 6 + n, n < NAME_LEN ? "- " : " ", 0);
+            redraw = 0;
+        }
         tick();
         c = ev_key;
         if (((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')) && n < NAME_LEN) {
             my_name[n++] = c;
             my_name[n] = 0;
+            redraw = 1;
             snd_play(SND_SELECT);
         } else if (c == KEY_BACK && n) {
             my_name[--n] = 0;
-        } else if (c == KEY_RETURN && n >= 2) {
+            redraw = 1;
+        } else if ((c == KEY_RETURN
+#ifdef __NABU__
+                    || ev_btn
+#endif
+                   ) && n >= 2) {
             break;
         }
     }

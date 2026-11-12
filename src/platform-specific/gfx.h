@@ -7,8 +7,14 @@
 
 #define SCR_ROWS 25
 
-#ifdef __ADAM__
+#if defined(__ADAM__) || defined(__NABU__)
 #define TITLE_Y(n) (80 + (n) * 8)  /* the VDP shows 4 sprites a line: the bombers stagger */
+#endif
+#ifdef __NABU__
+#define QUIT_HINT "ESC: QUIT"
+#define TAGLINE   "BOMBS AND BLASTS FOR 2-4"
+#define HINT_LR   "(L/R)"
+#define NAME_HELP "LETTERS, DIGITS, THEN RETURN"
 #endif
 
 /* row kinds */

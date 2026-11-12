@@ -6,9 +6,10 @@ FujiBlast is a bomb-maze game for two to four players over FujiNet. It runs on:
 - the Apple II in double hi-res (a 128K //e, //c or IIgs);
 - MS-DOS on an IBM PC, XT or PCjr (or compatible) with CGA and 128K, down to a 4.77 MHz 8088;
 - the Intellivision, with the FujiNet cartridge;
-- the Coleco Adam (TMS9918A).
+- the Coleco Adam (TMS9918A);
+- the NABU PC, through the NABU Internet Adapter (no FujiNet).
 
-All are played with a joystick (the Intellivision's hand controller); the Apple, the PC and the Adam take the keyboard too.
+All are played with a joystick (the Intellivision's hand controller); the Apple, the PC, the Adam and the NABU take the keyboard too.
 
 ## How to play
 
@@ -36,6 +37,7 @@ All the art and music are original. `gfx/*.png` is the master sheet that every p
 | `src/msdos/` | The MS-DOS implementation: Open Watcom, CGA's 320x200 4-colour mode, FUJINET.SYS's serial port driven by interrupt, the PC speaker. |
 | `src/intv/` | The Intellivision client: the C client again in IntyBASIC, its hot loops in CP1610 assembly; the cartridge's mailbox. |
 | `src/adam/` | The Coleco Adam implementation: z88dk and zsdcc, Graphics II as a character map, two sprites a bomber, the SN76489, the FujiNet's DCB driven by hand. |
+| `src/nabu/` | The NABU PC implementation: z88dk and zsdcc, the Adam's TMS9918A code on ports A0h/A1h, the AY-3-8910, a TCP socket opened by the NABU Internet Adapter (RetroNET) over the HCCA port. |
 | `docs/PROTOCOL.md` | The wire protocol and the state layout. |
 | `tools/` | The art converter and the emulator rigs. |
 
@@ -65,9 +67,15 @@ make intv               # r2r/intv/fujiblst.rom
 make adam               # r2r/adam/fujiblst.ddp
 ```
 
+```
+build-nabu.bat          # r2r/nabu/fujiblast.nabu (Windows)
+```
+
 `make intv` builds IntyBASIC 1.5 from `~/Workspace/IntyBASIC` (`IB_SRC`) and needs `as1600` on the PATH. The art is `gfx/intv/*.png` (drawn by `tools/drawart_intv.py`, converted by `tools/mkgfx_intv.py`); the sounds are the Mockingboard's tables (`tools/mksnd_intv.py`).
 
 `make adam` builds fujinet-lib (the pinned fujinet-lib-experimental in `~/Workspace`, `FNLIB_EXP`) with zsdcc into `build/fnlib-adam` and links the program, which must end below C800h (`tools/adam_end.py` checks); z88dk comes from the defoogi container unless installed. The art is `gfx/tms/*.png` (drawn by `tools/drawart_tms.py`, converted by `tools/mkgfx_tms.py`) and `gfx/namco.bin`. `make adam TEST_SCENE=1` builds an offline scene in (see Testing; `touch src/test.c` to go back).
+
+`build-nabu.bat` needs z88dk (`Z88DK_DIR`, default `c:\z88dk\`) and Python. It makes `gen/nabu` from the Adam's art (`tools/mkgfx_tms.py`) the first time, and takes `SERVER=host:port`, `OUT=name` (the file's name), `DEBUG=1` (messages on the Internet Adapter's console) and `TEST_SCENE=n`. Upstream's `src/appkey.c` is left out: `src/nabu/appkey.c` stands in for it. The result is copied to `LOCAL_DIR` (default `c:\nabu\local`, the Internet Adapter's folder for local programs) when that folder exists.
 
 The MS-DOS disk holds `FUJIBLST.EXE` and an `AUTOEXEC.BAT` that runs it. The art is `gfx/cga/*.png` (drawn by `tools/drawart_cga.py`, converted by `tools/mkgfx_cga.py`) and `gfx/namco.bin`, the Namco arcade font.
 
@@ -136,6 +144,18 @@ server/blastbot -addr localhost:9910 -table dev1 -n 3 -start 4
   - The game logic runs 60 times a second (a pass behind is made up by one that doesn't wait or draw).
   - In live play against three bots, adamcore redraws about 34 times a second.
 
+## The NABU PC
+
+- **Machine:** a NABU PC with the NABU Internet Adapter (or MAME's `nabupc` and an adapter). `fujiblast.nabu` loads like any other program the adapter sends.
+- **Network:** no FujiNet: the adapter opens the TCP socket (RetroNET: D0 open, D2 bytes waiting, D3 read, D4 write) and the NABU speaks to it over the HCCA port. Each call is one short exchange with interrupts off; a reply is read in one tight loop (`hcca_rx_n`), because a byte arrives every ~320 T-states and C between two reads can miss one. The frame layer (COBS, Fletcher sum) is the Adam's.
+- **Name:** there are no appkeys, so the name is asked for at each boot. An adapter at 2026.11.10.00 or newer (asked first through IA control BA 16, since an older one never answers) gives the player name set in its settings (RetroNET Multiplayer's `mp_getPlayerName`); it is filled in, and FIRE or RETURN keeps it, DEL rubs it out.
+- **Controls:** the joystick or the arrow keys walk; FIRE or SPACE is fire; RETURN, ESC (leave the table; on the title, quit) and DEL as they say; M turns the sound off and on.
+- **Screen:** the Adam's: Graphics II as a character map, two sprites a bomber, the frame's clock from the VDP's interrupt (through the AY's interrupt mask).
+- **Sound:** the AY-3-8910 plays the Adam's jingles and effects.
+- **Drawing the others:** the server sends each bomber's place every 2-4 frames; it is drawn walking there at about its own pace, faster only when well behind (`toward()` in `src/play.c`).
+
+Playing against bots on one PC: `set SERVER=localhost:9910 & set OUT=fblocal & build-nabu.bat`, then `local-server.bat` (builds `fujiblastd` and `blastbot` from `server/` with Go the first time, then runs the server and three bots in ROOM 1) and load `fblocal.nabu`.
+
 ## Testing
 
 ```
@@ -200,3 +220,12 @@ KEYS=keys.txt FRAMES=2400 tools/adamrig/rig.sh OUTDIR
 - The counters `adam_passes`, `adam_late` and `adam_skip` (src/adam/plat.c) are in the RAM dump (`/tmp/fujiblast-adam.*/ram.bin`); the map says where.
 
 - `tools/rigs/dropproxy.py` loses the first frame; `tools/rigs/cutproxy.py` hangs up in the middle of a game (`EXTRA=`, `ROOM=` through it).
+
+For the NABU PC:
+
+```
+ADAPTER="python my-adapter.py" MAME_DIR=path/to/mame tools/naburig/run.sh boot.lua
+```
+
+- `naburig/run.sh` runs MAME's `nabupc` headless (`-kbd nabu_hle`, the HCCA on a null modem to a socket) with a Lua script, against a RetroNET adapter on `PORT` (6266). `ADAPTER` is started with the `.nabu` file and the port; an adapter already listening works as well. No adapter is included.
+- `boot.lua`: title, name, room list. `play.lua`: joins ROOM 1 and walks. `prefill.lua`: the adapter's player name. `smooth.lua`: counts how far the others are drawn to move each frame (`DX`, `STA`: addresses from the map).
