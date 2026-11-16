@@ -45,6 +45,7 @@ uint8_t table_list(void)
  * stock TMS9918A ones at any time (src/nabu/gfx.c, input.c): the title says so */
 extern uint8_t f18a, f18a_found;
 void gfx_text_half(uint8_t row, uint8_t col, const char *s, uint8_t colour);
+void spr_title_px(uint8_t n, int16_t px, uint8_t y, uint8_t frame, uint8_t seat);
 static void video_hint(void)
 {
     centre(23, f18a ? "SYM: VIDEO F18A   " QUIT_HINT : "SYM: VIDEO STOCK  " QUIT_HINT, 0, 40);
@@ -57,6 +58,7 @@ void title(void)
     uint16_t t = 0;
 #ifdef __NABU__
     uint8_t was_f18a;
+    static uint16_t walk;               /* the F18A walk, in quarter pixels */
 redraw:                                 /* (SYM: the other video) */
     was_f18a = f18a;
 #endif
@@ -85,6 +87,14 @@ redraw:                                 /* (SYM: the other video) */
         tick();
         ++t;
         for (n = 0; n < SEATS; ++n) {
+#ifdef __NABU__
+            if (f18a) {         /* one line, 68 pixels apart: 4 x 68 is the screen and a bomber */
+                walk = n ? walk : (walk + 3) % (272 * 4);       /* (3/4 of a pixel a frame) */
+                spr_title_px(n, (int16_t)((walk >> 2) + n * 68) % 272 - 16, TITLE_Y(n),
+                             FR_RIGHT0 + ((t >> 3) & 1 ? (n & 1) + 1 : 0), n);
+                continue;
+            }
+#endif
             x = (uint8_t)((t >> 1) + n * 40) % 168;
             spr_at(n, x, TITLE_Y(n), FR_RIGHT0 + ((t >> 3) & 1 ? (n & 1) + 1 : 0), n, 0);
         }

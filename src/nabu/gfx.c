@@ -354,6 +354,7 @@ static void charset_reset(uint8_t bg)
 
 static uint8_t sat[64];                 /* the first 16 sprites' attributes */
 static uint8_t son[SEATS], sbig[SEATS], sfr[SEATS], sseat[SEATS];
+static uint8_t sec[SEATS];              /* the early clock: x is 32 pixels left (F18A title) */
 static uint8_t sx[SEATS], sy[SEATS];
 
 static void gfx_setup(void);
@@ -791,6 +792,7 @@ void spr_at(uint8_t n, uint8_t x, uint8_t y, uint8_t frame, uint8_t seat, uint8_
     sfr[n] = frame;
     sseat[n] = seat & 3;
     sbig[n] = big;
+    sec[n] = 0;
 }
 
 void spr_arena(uint8_t n, uint8_t x, uint8_t y, uint8_t frame, uint8_t seat)
@@ -798,6 +800,20 @@ void spr_arena(uint8_t n, uint8_t x, uint8_t y, uint8_t frame, uint8_t seat)
     son[n] = 1;
     sx[n] = 40 + x;
     sy[n] = 8 + y;
+    sfr[n] = frame;
+    sseat[n] = seat & 3;
+    sbig[n] = 0;
+    sec[n] = 0;
+}
+
+/* A bomber at screen pixel px (-16 to 255: in at the left edge by the
+ * early clock), for the F18A title's walk. */
+void spr_title_px(uint8_t n, int16_t px, uint8_t y, uint8_t frame, uint8_t seat)
+{
+    son[n] = px > -16 && px < 256;
+    sec[n] = px < 0;
+    sx[n] = (uint8_t)(px < 0 ? px + 32 : px);
+    sy[n] = y < 8 ? 0 : y - 8;
     sfr[n] = frame;
     sseat[n] = seat & 3;
     sbig[n] = 0;
@@ -917,8 +933,9 @@ void spr_flush(void)
         if (sbig[n]) {
             f = sfr[n] - FR_WIN0 > 1 ? 0 : sfr[n] - FR_WIN0;
             for (q = 0; q < 4; ++q) {
-                if (f18a) {     /* one 8-colour sprite a quarter */
-                    put_sprite(8 + q, sx[n] + (q & 1) * 16, sy[n] + (q >> 1) * 16,
+                if (f18a) {     /* one 8-colour sprite a quarter; the cheer's up frame
+                                 * 2 pixels higher (VGA's art moves only the legs) */
+                    put_sprite(8 + q, sx[n] + (q & 1) * 16, sy[n] - f * 2 + (q >> 1) * 16,
                                (N_FRAMES + f * 4 + q) * 4, sseat[n] << 1);
                     continue;
                 }
@@ -928,10 +945,10 @@ void spr_flush(void)
             }
         } else if (f18a) {      /* one sprite, the seat's group */
             p = sat + (n << 2);
-            p[0] = sy[n] - 1;
+            p[0] = sy[n] - 1 - (sfr[n] == FR_WIN1);    /* (the cheer jumps, as the stock art) */
             p[1] = sx[n];
             p[2] = sfr[n] << 2;
-            p[3] = sseat[n] << 1;
+            p[3] = sseat[n] << 1 | sec[n] << 7;
         } else {
             p = sat + (((n + rot) & 3) << 3);   /* sprites 2k and 2k+1 */
             y = sy[n] - 1;
