@@ -56,6 +56,7 @@ void plat_init(void)
 void plat_quit(void)
 {
     snd_stop();
+    gfx_quit();
     __asm
         di
         ld      a,2             ; the boot ROM back in

@@ -40,10 +40,23 @@ uint8_t table_list(void)
 #define KEY_END_NAME "RETURN"   /* (the PC's key says ENTER) */
 #endif
 
+#ifdef __NABU__
+/* with an F18A (or a PICO9918), SYM switches its colour screens and the
+ * stock TMS9918A ones at any time (src/nabu/gfx.c, input.c): the title says so */
+extern uint8_t f18a, f18a_found;
+static void video_hint(void)
+{
+    centre(23, f18a ? "SYM: VIDEO F18A   " QUIT_HINT : "SYM: VIDEO STOCK  " QUIT_HINT, 0, 40);
+}
+#endif
+
 void title(void)
 {
     uint8_t n, x;
     uint16_t t = 0;
+#ifdef __NABU__
+    uint8_t was_f18a;
+#endif
     gfx_begin();
     gfx_logo(3);
     gfx_row(8, ROW_BIG, PAL_MENU);
@@ -51,6 +64,12 @@ void title(void)
     centre(18, "PRESS FIRE", 0, 40);
     centre(21, TAGLINE, 0, 40);
 #ifdef QUIT_HINT
+#ifdef __NABU__
+    was_f18a = f18a;
+    if (f18a_found)                     /* (the switch beside it) */
+        video_hint();
+    else
+#endif
     centre(23, QUIT_HINT, 0, 40);       /* (a platform that can quit) */
 #endif
     gfx_show();
@@ -67,6 +86,12 @@ void title(void)
 #ifdef QUIT_HINT
         if (ev_key == KEY_ESC)
             plat_quit();
+#endif
+#ifdef __NABU__
+        if (f18a != was_f18a) {
+            was_f18a = f18a;
+            video_hint();
+        }
 #endif
     }
     snd_stop();
@@ -121,11 +146,17 @@ void name_entry(void)
 {
     uint8_t n = 0, redraw = 1;
     char c;
+#ifdef __NABU__
+again:
+#endif
     gfx_begin();
     gfx_row(6, ROW_BIG, PAL_MENU);
     centre(6, NAME_PROMPT, 0, 20);
     gfx_row(10, ROW_BIG, PAL_MENU);
     centre(14, NAME_HELP, 0, 40);
+#ifdef __NABU__
+    centre(16, "ESC: BACK", 0, 40);
+#endif
     gfx_show();
 #ifdef __NABU__
     /* the Internet Adapter's player name, to keep (RETURN or fire) or rub out;
@@ -165,6 +196,13 @@ void name_entry(void)
                    ) && n >= 2) {
             break;
         }
+#ifdef __NABU__
+        else if (c == KEY_ESC) {        /* back to the title (whose ESC quits) */
+            title();
+            redraw = 1;
+            goto again;
+        }
+#endif
     }
 }
 #endif

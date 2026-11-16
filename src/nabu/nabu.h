@@ -53,6 +53,8 @@ uint8_t vdp_status(void);
 /* gfx.c: set by frame_wait: this frame is just past the VDP interrupt, so
  * the blank is ours to write in flat out */
 extern uint8_t gfx_fast;
+void gfx_quit(void);            /* an F18A back as at power-on */
+void gfx_toggle(void);          /* SYM: F18A <-> stock screens (with an F18A) */
 
 /* sound.c: a frame of the sound (from the frame interrupt) */
 void snd_frame(void);

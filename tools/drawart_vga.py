@@ -380,25 +380,43 @@ def panel(name, lit, bg=None):
     return g
 
 
-# ---- the trophy: gold, a shine down the left, on a dark plinth ------------------
+# ---- the trophy: gold, lit down the middle, on a dark plinth --------------------
+
+# Symmetric (drawart_cga's has one handle unlike the other and a shade down
+# one side, which read as a lopsided cup): both handles alike, the stem
+# centred, the shading the same on both sides. (drawart_tms.py's shape.)
+TROPHY = [
+    "................",
+    "..wwwwwwwwwwww..",
+    "wwwwwwwwwwwwwwww",
+    "w..wwwwwwwwww..w",
+    "w..wwwwwwwwww..w",
+    ".w.wwwwwwwwww.w.",
+    "..wwwwwwwwwwww..",
+    "....wwwwwwww....",
+    "......wwww......",
+    "......wwww......",
+    "......wwww......",
+    ".....wwwwww.....",
+    "....rrrrrrrr....",
+    "....rwwwwwwr....",
+    "....rrrrrrrr....",
+    "................",
+]
+
 
 def trophy():
     """16x16 for the menus (0: the backdrop)."""
     g = grid(T, T)
-    for y, row in enumerate(C.TROPHY):
+    for y, row in enumerate(TROPHY):
         for x, ch in enumerate(row):
             if ch == ".":
                 continue
             if y >= 12:
                 g[y][x] = V.TROPHY + (5 if ch == "w" else 7)
                 continue
-            if ch == "c":
-                g[y][x] = V.TROPHY + 2
-                continue
             k = (x - 7.5) / 5.5
-            v = 4.2 - k * 2.4 - abs(k) * 1.2
-            if x in (4, 5) and 2 <= y <= 7:
-                v = 6
+            v = 6.0 - abs(k) * 3.6              # brightest in the middle
             g[y][x] = V.TROPHY + clamp(int(round(v)), 0, 6)
     return g
 

@@ -40,6 +40,10 @@ static const uint8_t arrow_dir[4] = { IN_RIGHT, IN_LEFT, IN_UP, IN_DOWN };
 static void key(uint8_t k)
 {
     uint8_t d;
+    if (k == 0xE8) {                    /* SYM: the other video (F8h: let go) */
+        gfx_toggle();
+        return;
+    }
     if ((k & 0xEC) == 0xE0) {           /* an arrow: E0h-E3h down, F0h-F3h up */
         d = arrow_dir[k & 3];
         if (!(k & 0x10)) {
