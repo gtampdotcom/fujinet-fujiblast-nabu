@@ -142,8 +142,21 @@ int main(void)
         appkey_save_name();
     }
     for (;;) {
+#ifdef __NABU__
+        if (!srv_table[0]) {
+            uint8_t r = table_list();
+            if (r == 2) {               /* ESC: back to the name */
+                name_entry();
+                appkey_save_name();
+                continue;
+            }
+            if (!r)
+                continue;
+        }
+#else
         if (!srv_table[0] && !table_list())
             continue;
+#endif
         if (!play_table())
             appkey_clear_room();
     }

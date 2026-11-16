@@ -127,14 +127,17 @@ void name_entry(void)
     gfx_row(10, ROW_BIG, PAL_MENU);
     centre(14, NAME_HELP, 0, 40);
     gfx_show();
-    my_name[0] = 0;
 #ifdef __NABU__
-    /* the Internet Adapter's player name, to keep (RETURN or fire) or rub out */
+    /* the Internet Adapter's player name, to keep (RETURN or fire) or rub out;
+     * back from the room list (ESC), the name we had */
     {
         extern char name_prefill[];
-        strcpy(my_name, name_prefill);
+        if (!my_name[0])
+            strcpy(my_name, name_prefill);
         n = strlen(my_name);
     }
+#else
+    my_name[0] = 0;
 #endif
     for (;;) {
         /* Only when it changes, and over what was there (no clearing first):
@@ -171,6 +174,77 @@ static void phase_name(char *b, uint8_t ph)
     strcpy(b, ph == PH_WAIT ? "WAITING" : "PLAYING");
 }
 
+#ifdef __NABU__
+/* The NABU's room list: a REFRESH line under the rooms asks the server for
+ * the list again (it sends it only when asked), and ESC goes back to the
+ * name (returns 2; 1: a room picked, 0: no answer). */
+uint8_t table_list(void)
+{
+    static char b[41];
+    uint8_t n, i, j, sel = 0, *t;
+    message("CONNECTING", srv_host, 1);
+    n = net_tables();
+    for (;;) {
+        if (!n) {
+            net_close();
+            message("NO ANSWER FROM", srv_host, 0);
+            return 0;
+        }
+        if (sel > n)
+            sel = n;
+        gfx_begin();
+        gfx_row(1, ROW_BIG, PAL_MENU);
+        centre(1, "PICK A ROOM", 0, 20);
+        for (i = 0; i < n; ++i) {
+            t = tables[i];
+            memset(b, ' ', 40);
+            b[40] = 0;
+            memcpy(b + 4, t + 8, 12);
+            for (j = 4; j < 16; ++j)
+                if (!b[j])
+                    b[j] = ' ';
+            b[18] = '0' + t[20];
+            b[19] = '/';
+            b[20] = '0' + t[21];
+            phase_name(b + 24, t[22]);
+            gfx_text(5 + i * 2, 0, b, 0);
+        }
+        gfx_text(5 + n * 2, 4, "REFRESH", 0);
+        centre(22, "STICK: CHOOSE    FIRE: PICK", 0, 40);
+        centre(24, "ESC: CHANGE NAME", 0, 40);
+        gfx_show();
+        for (;;) {
+            for (i = 0; i <= n; ++i)
+                gfx_text(5 + i * 2, 2, i == sel ? ">" : " ", 0);
+            prev_dir = inp_dir;
+            tick();
+            net_poll();
+            if (pressed(IN_UP) && sel) {
+                --sel;
+                snd_play(SND_SELECT);
+            }
+            if (pressed(IN_DOWN) && sel < n) {
+                ++sel;
+                snd_play(SND_SELECT);
+            }
+            if (ev_key == KEY_ESC) {
+                net_close();
+                return 2;
+            }
+            if (ev_btn || ev_key == KEY_RETURN)
+                break;
+        }
+        if (sel < n)
+            break;
+        snd_play(SND_SELECT);
+        message("REFRESHING", srv_host, 1);
+        n = net_tables();       /* (the link is still open: the list asked again) */
+    }
+    memcpy(srv_table, tables[sel], TABLE_LEN);
+    srv_table[TABLE_LEN] = 0;
+    return 1;
+}
+#else
 uint8_t table_list(void)
 {
     static char b[41];
@@ -222,4 +296,5 @@ uint8_t table_list(void)
     srv_table[TABLE_LEN] = 0;
     return 1;
 }
+#endif
 #endif

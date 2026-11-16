@@ -41,8 +41,11 @@ static void mask(uint8_t m)
     IO_AY_DATA = m;
 }
 
+/* The receive interrupt's handler in the IM 2 table (nabu_hw.asm), before
+ * ay_vdp_int_on puts the receive bit into the mask. */
 void hcca_init(void)
 {
+    hcca_rx_install();
 }
 
 /* The VDP's frame interrupt is wired to the Z80 through the AY's interrupt
@@ -57,7 +60,7 @@ uint8_t ay_vdp_int_on(void)
     __asm__("di");
     IO_AY_LATCH = PSG_REG_IO_A;
     m = IO_AY_DATA;
-    int_mask = (uint8_t)(m | INT_MASK_VDP);
+    int_mask = (uint8_t)(m | INT_MASK_VDP | INT_MASK_HCCARX);  /* (and the replies' interrupt) */
     IO_AY_DATA = int_mask;
     m = IO_AY_DATA;                 /* (the latch stays at register 14) */
     __asm__("ei");

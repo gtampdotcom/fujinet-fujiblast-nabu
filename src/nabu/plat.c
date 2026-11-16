@@ -29,9 +29,9 @@ static uint8_t synth;           /* frames made up in a row (0: the interrupt wor
 #define FC (*(volatile uint16_t *)&frame_count)
 
 /* The VDP's frame interrupt (vdp_isr: registers saved, interrupts off). */
-void vdp_frame(void)
+void vdp_frame(uint8_t s) __z88dk_fastcall
 {
-    uint8_t s = vdp_status();   /* (reading it lets the interrupt go) */
+    /* s: the status, read by the handler (interrupts are on again: the HCCA's bytes come in) */
     vdp_seen |= s;
     if (s & 0x80) {
         ++frame_count;

@@ -14,6 +14,15 @@
 #include <stdint.h>
 
 void hcca_init(void);
+
+/* nabu_hw.asm: the replies by interrupt. Each byte the HCCA receives goes into
+ * rxq at rxq_w (which only the interrupt and hcca_send move); nstrans.c keeps
+ * its own read index. hcca_send sends n bytes, taking any reply byte that
+ * comes meanwhile. */
+extern uint8_t rxq[256];
+extern volatile uint8_t rxq_w;
+void hcca_rx_install(void);
+void hcca_send(const uint8_t *p, uint8_t n);
 uint8_t ay_vdp_int_on(void);    /* the VDP's bit into the AY interrupt mask (plat.c); the mask now */
 void hcca_begin(void);          /* a transaction starts: interrupts off, mask on receive */
 void hcca_end(void);            /* ... ends: the mask and interrupts back */

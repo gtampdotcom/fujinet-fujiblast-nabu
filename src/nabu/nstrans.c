@@ -44,8 +44,10 @@
 
 #define DOWN_AFTER 3            /* statuses saying the socket is shut */
 #define BAD_AFTER  8            /* calls in a row without an answer */
-#define WRITE_TRIES 4
-#define RBUF 255                /* the most a read takes (the server keeps under 192 unacknowledged) */
+#define RBUF 240                /* the most a read takes (the server keeps under 192 unacknowledged;
+                                 * the reply, 4 + 240, and a write's 4 fit the 256-byte ring) */
+#define RN_LATE 90              /* frames a reply may take (1.5 s), then the link has missed one */
+#define RN_HUSH 30              /* frames after a reply that never came: late bytes thrown away */
 #define FMAX 136                /* a decoded frame, at most */
 #define OMAX 64                 /* a frame we send, at most */
 #define QMAX 96                 /* frames flushed, not yet written */
@@ -67,6 +69,18 @@ extern uint8_t plat_will_draw;  /* plat.c: 0 on a pass made up to catch up */
 static uint8_t dlen, drem, dzero, dbad;     /* the frame being decoded */
 static uint8_t obuf[OMAX], olen, oover;     /* the frame being put */
 static uint8_t qbuf[QMAX], qlen;
+
+/* The requests out, their replies not yet in (nabu_hw.asm's interrupt puts
+ * the bytes into rxq): a write's (W) and/or a read's (R), in the order sent. */
+static uint8_t pk[2], pn;       /* the kinds waited for */
+static uint8_t hn, hdr[4];      /* the head reply's int32, as far as it came */
+static uint8_t need, got;       /* a read's payload: bytes still to come, bytes in rbuf */
+static uint8_t sent_w;          /* the bytes a write sent */
+static uint16_t sent_f, hush_f; /* the frame the requests went; till when late bytes go */
+static uint8_t hushing;
+static uint8_t rxq_r;
+static uint8_t tbuf[4 + QMAX + 4];  /* the requests as they go: D4 + frames, D3 */
+#define FCV (*(volatile uint16_t *)&frame_count)
 
 /* ---- the wire (hcca_rx_n: a tight loop, no byte lost) ------------------- */
 
@@ -112,57 +126,6 @@ static void tx16(uint16_t v)
     hcca_tx((uint8_t)(v >> 8));
 }
 
-#ifdef NST_ASK_FIRST
-static uint8_t call_avail(int32_t *n)
-{
-    uint8_t ok;
-    hcca_begin();
-    hcca_tx(RN_TCP_AVAIL);
-    hcca_tx(handle);
-    ok = rxn((uint8_t *)n, 4, RN_FIRST) == 4;
-    if (!ok)
-        drain();
-    hcca_end();
-    return ok;
-}
-#endif
-
-static uint8_t call_read(uint8_t max, int32_t *n)
-{
-    uint8_t ok, got;
-    hcca_begin();
-    hcca_tx(RN_TCP_READ);
-    hcca_tx(handle);
-    tx16(max);
-    got = rxp(4, rbuf, max, RN_FIRST);
-    ok = hcca_npre == 4;
-    if (ok) {
-        memcpy(n, hcca_hdr, 4);
-        if (*n > 0 && (*n > max || got != (uint8_t)*n))
-            ok = 0;
-    }
-    if (!ok)
-        drain();
-    hcca_end();
-    return ok;
-}
-
-static uint8_t call_write(const uint8_t *p, uint8_t n, int32_t *wrote)
-{
-    uint8_t ok, i;
-    hcca_begin();
-    hcca_tx(RN_TCP_WRITE);
-    hcca_tx(handle);
-    tx16(n);
-    for (i = 0; i < n; ++i)
-        hcca_tx(p[i]);
-    ok = rxn((uint8_t *)wrote, 4, RN_FIRST) == 4;
-    if (!ok)
-        drain();
-    hcca_end();
-    return ok;
-}
-
 /* ---- the link ------------------------------------------------------------- */
 
 uint8_t nst_open(const char *host, uint16_t port)
@@ -198,17 +161,32 @@ uint8_t nst_open(const char *host, uint16_t port)
     nst_taken = 0;
     polled = nabu_passes;
     polled_f = frame_count - POLL_GAP;
+    pn = hn = hushing = 0;
+    rxq_r = rxq_w;
     nst_put(0);                 /* ends whatever came before: our first frame is clean */
     return 1;
 }
 
-static void write_queue(void);
+static void collect(void);
+static void send_requests(uint8_t read);
+
+/* Till the replies waited for are in (or a second has gone). */
+static void settle(void)
+{
+    uint16_t t = FCV;
+    while (pn && (uint16_t)(FCV - t) < 60)
+        collect();
+    pn = hn = 0;
+}
 
 void nst_close(void)
 {
     if (handle != H_ANY) {
-        if (qlen)
-            write_queue();      /* (a goodbye goes out) */
+        settle();
+        if (qlen) {
+            send_requests(0);   /* (a goodbye goes out) */
+            settle();
+        }
         hcca_begin();
         hcca_tx(RN_TCP_CLOSE);
         hcca_tx(handle);
@@ -218,99 +196,127 @@ void nst_close(void)
     }
     qlen = olen = oover = 0;
     rlen = rpos = 0;
+    pn = hn = 0;
 }
 
-/* The flushed frames go out whole (a short write sends on what is left). */
-static void write_queue(void)
+/* The replies so far, out of the ring: a write's int32 (the bytes written,
+ * -1: the socket is gone), a read's int32 (the bytes that follow; -1: gone)
+ * and its bytes, into rbuf. */
+static void collect(void)
 {
-    int32_t wrote;
-    uint8_t tries;
-    for (tries = 0; tries < WRITE_TRIES; ++tries) {
-        wrote = 0;
-        if (call_write(qbuf, qlen, &wrote)) {
-            bad = 0;
-            if (wrote == (int32_t)qlen) {
-                qlen = 0;
-                return;
+    int32_t v;
+    while (pn && rxq_r != rxq_w) {
+        if (hn < 4) {
+            hdr[hn++] = rxq[rxq_r++];
+            if (hn < 4)
+                continue;
+            memcpy(&v, hdr, 4);
+            if (pk[0] == 'W') {
+                if (v < 0) {
+                    if (down < 255)
+                        ++down;
+                } else if (v != sent_w) {
+                    lost = 1;   /* a frame that didn't go whole: the link is out of step */
+                }
+            } else if (v > 0 && v <= RBUF) {
+                need = (uint8_t)v;
+                got = 0;
+                continue;       /* its bytes follow */
+            } else if (v < 0) {
+                if (down < 255)
+                    ++down;
+            } else if (v) {
+                garbled = 1;    /* more than asked: can't be */
+            } else {
+                down = 0;
             }
-            if (wrote < 0) {    /* the socket is gone */
-                ++down;
-                qlen = 0;
-                return;
-            }
-            if (wrote > 0 && wrote < (int32_t)qlen) {
-                memmove(qbuf, qbuf + (uint8_t)wrote, qlen - (uint8_t)wrote);
-                qlen -= (uint8_t)wrote;
-            }
-        } else if (bad < 255) {
-            ++bad;
+        } else {
+            rbuf[got++] = rxq[rxq_r++];
+            if (--need)
+                continue;
+            rlen = got;
+            rpos = 0;
+            down = 0;
         }
+        bad = 0;                /* a whole reply: the next, if any */
+        hn = 0;
+        pk[0] = pk[1];
+        --pn;
     }
-    qlen = 0;
-    lost = 1;                   /* a frame that didn't go: the link is out of step */
 }
 
-/* One look at the adapter, once a pass at most: the frames queued go out in one
- * write, and the socket is read (every POLL_GAP frames: each call is a
- * round trip).
+/* The frames queued (D4) and, if read, a read (D3), in one go; the replies
+ * come by interrupt and collect takes them on later passes: no waiting. */
+static void send_requests(uint8_t read)
+{
+    uint8_t n = 0;
+    rxq_r = rxq_w;              /* (nothing is waited for: stray bytes away) */
+    if (qlen) {
+        tbuf[0] = RN_TCP_WRITE;
+        tbuf[1] = handle;
+        tbuf[2] = qlen;
+        tbuf[3] = 0;
+        memcpy(tbuf + 4, qbuf, qlen);
+        n = 4 + qlen;
+        sent_w = qlen;
+        qlen = 0;
+        pk[pn++] = 'W';
+    }
+    if (read) {
+        tbuf[n++] = RN_TCP_READ;
+        tbuf[n++] = handle;
+        tbuf[n++] = RBUF;
+        tbuf[n++] = 0;
+        pk[pn++] = 'R';
+    }
+    hn = 0;
+    sent_f = FCV;
+    hcca_send(tbuf, n);
+}
+
+/* One look at the adapter, once a pass at most: what came is taken; with
+ * nothing waited for, the frames queued go out at once (our moves: the server
+ * judges a blast by where it last heard we were, so every frame they wait
+ * counts), and the socket is read every POLL_GAP frames (the server sends
+ * every 3), with them when both are due.
  *
- * Once a pass, not once a frame: a real adapter takes milliseconds to answer
- * each call (a USB serial link alone ~16 ms), the frame's interrupt then lands
- * after the call, and net_poll's loop asked again and again; 3 bots on metal
- * ran at about a frame a second. A pass made up to catch up (it doesn't draw)
- * doesn't ask at all, so the game gets back in step; and the server sends
- * only every 3 frames, so it is asked every POLL_GAP frames at most. */
+ * The replies aren't waited for: a real adapter takes milliseconds to answer
+ * (a USB serial link alone ~16 ms), time the game used to spend with
+ * interrupts off, polling. They come by interrupt (nabu_hw.asm) while the game
+ * runs, and are taken here on a later pass. */
 static void step(void)
 {
-    int32_t n;
-    uint8_t want;
-
-    if (handle == H_ANY || rpos < rlen)
+    uint8_t read;
+    if (handle == H_ANY)
         return;
-    if (polled == nabu_passes || !plat_will_draw)
+    if (hushing) {              /* a reply that never came: wait out late bytes */
+        rxq_r = rxq_w;
+        if ((uint16_t)(FCV - hush_f) < RN_HUSH)
+            return;
+        hushing = 0;
+    }
+    collect();
+    if (pn) {
+        if ((uint16_t)(FCV - sent_f) >= RN_LATE) {
+            if (pk[0] == 'R' || pn > 1)
+                garbled = 1;    /* a read's bytes may have been taken and lost */
+            if (bad < 255)
+                ++bad;
+            pn = hn = 0;
+            hushing = 1;
+            hush_f = FCV;
+        }
         return;
-    if (frame_count - polled_f < POLL_GAP)
+    }
+    if (polled == nabu_passes)
+        return;
+    read = rpos >= rlen && (uint16_t)(FCV - polled_f) >= POLL_GAP;
+    if (!read && !qlen)
         return;
     polled = nabu_passes;
-    polled_f = frame_count;
-    if (qlen)
-        write_queue();
-#ifdef NST_ASK_FIRST
-    if (!call_avail(&n)) {
-        if (bad < 255)
-            ++bad;
-        return;
-    }
-    bad = 0;
-    if (n < 0) {
-        if (down < 255)
-            ++down;
-        return;
-    }
-    down = 0;
-    if (n == 0)
-        return;
-    want = n > RBUF ? RBUF : (uint8_t)n;
-#else
-    /* No D2 first: the Internet Adapter's D3 answers at once with what waits,
-     * up to the length asked (0: none), so one call a poll, not two. */
-    want = RBUF;
-#endif
-    if (!call_read(want, &n)) {
-        garbled = 1;            /* some were taken from the socket and lost */
-        if (bad < 255)
-            ++bad;
-        return;
-    }
-    if (n < 0) {
-        if (down < 255)
-            ++down;
-        return;
-    }
-    down = 0;
-    bad = 0;
-    rlen = (uint8_t)n;
-    rpos = 0;
+    if (read)
+        polled_f = FCV;
+    send_requests(read);
 }
 
 /* A frame is gathered, then queued (and written) at its closing 0. */
@@ -322,11 +328,9 @@ void nst_put(uint8_t c)
         oover = 1;
     if (c)
         return;
-    if (handle != H_ANY && !oover && qlen + olen > QMAX)
-        write_queue();          /* full: what waits goes now */
     if (!oover && handle != H_ANY && qlen + olen <= QMAX) {
         memcpy(qbuf + qlen, obuf, olen);
-        qlen += olen;           /* it goes at the next pass's step, with the others */
+        qlen += olen;           /* it goes with the next requests (step) */
     } else if (handle != H_ANY) {
         lost = 1;
     }

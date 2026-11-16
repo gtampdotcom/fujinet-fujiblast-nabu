@@ -24,7 +24,7 @@ _kb_install:                            ; the IM 2 table's keyboard entry (z88dk
         ei
         ret
 
-kb_isr:
+kb_isr:                                 ; (short: the HCCA's receive interrupt can't wait long)
         push    af
         push    de
         push    hl
@@ -50,6 +50,7 @@ _kb_poll:
 ; read the 8251's code into the queue (dropped if full); changes AF, DE, HL
 kb_take:
         in      a,($90)
+kb_store:                               ; (the code in A)
         ld      d,a
         ld      a,(_kbq_w)
         ld      e,a
@@ -121,19 +122,21 @@ vdp_isr:
         ld      a,(_vdp_busy)
         or      a
         jr      nz,vi_defer
+        in      a,($A1)                 ; the status (reading it lets the interrupt go)
         push    bc
         push    de
         push    hl
         push    ix
         push    iy
-        call    _vdp_frame
+        ei                              ; interrupts back on: the HCCA's bytes can't wait. (MAME
+        ld      l,a                     ; can take the interrupt again here, the status now 0:
+        call    _vdp_frame              ; so it goes in L, not in RAM, where that would overwrite it)
         pop     iy
         pop     ix
         pop     hl
         pop     de
         pop     bc
         pop     af
-        ei
         ret
 vi_defer:
         ld      a,1
@@ -424,3 +427,103 @@ fl_done:
         ld      h,l
         ld      l,c
         ret
+
+
+; ---- the HCCA's replies by interrupt ---------------------------------------------
+; nstrans.c doesn't wait for a reply: the HCCA receive interrupt (the IM 2 table's
+; entry 0) puts each byte into a 256-byte ring (rxq, rxq_w; nstrans.c reads it).
+; Nothing in the port may hold interrupts off longer than about one byte's time
+; (~320 T-states) while a reply can come, or the UART loses one.
+        SECTION code_user
+        PUBLIC  _hcca_rx_install, _hcca_send, _rxq, _rxq_w
+        EXTERN  _int_mask
+
+_hcca_rx_install:
+        di
+        ld      a,i
+        ld      h,a
+        ld      l,0
+        ld      de,hcca_rx_isr
+        ld      (hl),e
+        inc     hl
+        ld      (hl),d
+        ei
+        ret
+
+hcca_rx_isr:
+        push    af
+        push    hl
+        call    rx_take
+        pop     hl
+        pop     af
+        ei
+        ret
+
+; the waiting byte into the ring; changes A, HL
+rx_take:
+        ld      hl,_rxq_w
+        ld      a,(hl)
+        inc     (hl)
+        ld      hl,_rxq
+        add     a,l
+        ld      l,a
+        jr      nc,rt_in
+        inc     h
+rt_in:  in      a,($80)
+        ld      (hl),a
+        ret
+
+; void hcca_send(const uint8_t *p, uint8_t n): n bytes out. Interrupts are off only
+; for each look at the transmitter (and the byte, if it is free): ~120 T-states. In
+; between they are on, so the receive interrupt takes every byte of a reply that
+; comes meanwhile (a request sent just before can be answered while this one goes).
+; (Polling the receiver here, interrupts off throughout, lost bytes in MAME.)
+_hcca_send:
+        ld      hl,2
+        add     hl,sp
+        ld      e,(hl)
+        inc     hl
+        ld      d,(hl)
+        inc     hl
+        ld      b,(hl)                  ; DE = p, B = n
+        ld      a,b
+        or      a
+        ret     z
+hs_byte:
+        ld      c,0                     ; 256 looks at most (~10 ms), then it goes anyway
+hs_try:
+        di
+        ld      a,14
+        out     ($41),a
+        ld      a,$40                   ; the send mask: port B bit 0 = the transmitter is free
+        out     ($40),a
+        ld      a,15
+        out     ($41),a
+        in      a,($40)
+        and     1
+        jr      z,hs_busy
+hs_out:
+        ld      a,(de)
+        out     ($80),a
+        call    hs_mask
+        ei
+        inc     de
+        djnz    hs_byte
+        ret
+hs_busy:
+        call    hs_mask
+        ei
+        dec     c
+        jr      nz,hs_try
+        di
+        jr      hs_out
+hs_mask:                                ; the mask back (the receive interrupt is in it)
+        ld      a,14
+        out     ($41),a
+        ld      a,(_int_mask)
+        out     ($40),a
+        ret
+
+        SECTION bss_user
+_rxq:           defs    256
+_rxq_w:         defs    1
