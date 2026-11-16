@@ -7,7 +7,7 @@
 
 #define SCR_ROWS 25
 
-#if defined(__ADAM__) || defined(__NABU__)
+#if defined(__ADAM__) || defined(__MSX__) || defined(__NABU__)
 #define TITLE_Y(n) (80 + (n) * 8)  /* the VDP shows 4 sprites a line: the bombers stagger */
 #endif
 #ifdef __NABU__
@@ -57,7 +57,38 @@ uint8_t map_next(const uint8_t *map, const uint8_t *drawn, uint8_t from);
 
 /* Sprites: n 0-3, in seat's colour. spr_arena takes arena units; spr_at
  * the screen's own (x 0-159, y 0-199). big: twice the size. */
+#ifdef __APPLE2__
+/* The Apple's takes its arguments in memory: cc65 would stack each one,
+ * for four seats every jiffy (src/apple2/gfxa.s). */
+extern uint8_t spr_ax, spr_ay, spr_af, spr_as;
+void __fastcall__ spr_arena_m(uint8_t n);
+#define spr_arena(n, x, y, frame, seat) \
+    (spr_ax = (x), spr_ay = (y), spr_af = (frame), spr_as = (seat), spr_arena_m(n))
+#elif defined(_CMOC_VERSION_)
+#ifdef COCO3
+#define SPR_X0 56               /* the arena's first pixel, line and the unit's shift */
+#define SPR_Y0 16
+#define SPR_XS 0
+#else
+#define SPR_X0 20
+#define SPR_Y0 12
+#define SPR_XS 1
+#endif
+/* The CoCo's sets the bomber's wants itself: a call would push five arguments
+ * for each seat every jiffy (src/coco2/gfx.c, src/coco3/gfx3.c). */
+extern uint8_t w_on[4], w_x[4], w_y[4], w_fr[4], w_seat[4], w_big[4];
+#define spr_arena(n, x, y, frame, seat) \
+    (w_on[n] = 1, w_x[n] = SPR_X0 + ((x) >> SPR_XS), w_y[n] = SPR_Y0 + (y), w_fr[n] = (frame), w_seat[n] = (seat), w_big[n] = 0)
+#elif defined(__H89__)
+/* The H89's sets the bomber's wants too, laid out only when the screen is
+ * sent (src/h89/gfx.c): a 2 MHz Z80 can't afford a call of five arguments
+ * for each seat every jiffy. */
+extern uint8_t w_on[4], w_x[4], w_y[4], w_fr[4], w_seat[4];
+#define spr_arena(n, x, y, frame, seat) \
+    (w_on[n] = 1, w_x[n] = (x), w_y[n] = (y), w_fr[n] = (frame), w_seat[n] = (seat))
+#else
 void spr_arena(uint8_t n, uint8_t x, uint8_t y, uint8_t frame, uint8_t seat);
+#endif
 void spr_at(uint8_t n, uint8_t x, uint8_t y, uint8_t frame, uint8_t seat, uint8_t big);
 void spr_hide(uint8_t n);
 void spr_hide_all(void);

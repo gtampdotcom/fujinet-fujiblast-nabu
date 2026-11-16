@@ -25,6 +25,10 @@ static uint16_t sent_t, bump_t;
 static uint8_t hud_timer, hud_alive, hud_wins[SEATS], stats[5], last_phase;
 static uint8_t scan;                    /* drawn[] has holes: compare all the tiles */
 
+#ifdef PLAT_SEATS_WHEN_DRAWN
+extern uint8_t plat_will_draw;          /* the platform: this pass will be drawn */
+#endif
+
 #ifndef MOVE_EVERY
 #define MOVE_EVERY 3            /* jiffies between our moves, at least (a slow
                                  * link sends fewer) */
@@ -243,16 +247,20 @@ static uint8_t try_dirs(uint8_t lv)
     return mv_step(b, lv);
 }
 
-static uint8_t frame_of(uint8_t dir, uint8_t moving)
-{
-    static const uint8_t base[4] = { FR_UP0, FR_RIGHT0, FR_DOWN0, FR_LEFT0 };
-    static const uint8_t walk[4] = { 0, 1, 0, 2 };
-    return base[dir & 3] + (moving ? walk[(frame_count >> 3) & 3] : 0);
-}
+/* (cc65 stacks every argument but the last, so these take one; play_frame
+ * runs every jiffy, four seats each time) */
+static const uint8_t fr_base[4] = { FR_UP0, FR_RIGHT0, FR_DOWN0, FR_LEFT0 };
+static const uint8_t fr_walk[4] = { 0, 1, 0, 2 };
+static uint8_t walk_f;                  /* this jiffy's walking frame, 0-2 */
+#define FRAME_OF(dir, moving) (fr_base[(dir) & 3] + ((moving) ? walk_f : 0))
 
-static uint8_t toward(uint8_t at, uint8_t to)
+#ifndef TOWARD_STEP
+#define TOWARD_STEP 3           /* units a jiffy another player is drawn moving */
+#endif
+static uint8_t tw_at, tw_to;            /* toward(): from tw_at a step to tw_to */
+static uint8_t toward(void)
 {
-    uint8_t d = at > to ? at - to : to - at;
+    uint8_t at = tw_at, to = tw_to, d = at > to ? at - to : to - at;
     if (!d)
         return at;
     if (d > UNIT)
@@ -260,13 +268,19 @@ static uint8_t toward(uint8_t at, uint8_t to)
     /* A walker goes 1-2 units a jiffy, and its place comes every 2-4: at
      * about its own pace (faster only when well behind), not 3 units at
      * once and then a wait (a stop-go shuffle). */
+#ifdef TOWARD_PACED
     d = d > 8 ? 3 : d > 4 ? 2 : 1;
+#else
+    if (d > TOWARD_STEP)
+        d = TOWARD_STEP;
+#endif
     return at > to ? at - d : at + d;
 }
 
 void play_frame(void)
 {
     uint8_t s, moved = 0, t, me, d;
+    const uint8_t *pl;
 
     me = my_seat != NONE && ALIVE(my_seat) && st[OFF_PHASE] == PH_PLAY;
     if (me) {
@@ -311,6 +325,18 @@ void play_frame(void)
         scan = 1;
     }
 
+#ifdef PLAT_SEATS_WHEN_DRAWN
+    /* (a platform that draws a few times a second, the logic's other passes
+     * all it can afford: the seats are laid out only for a pass it will
+     * draw; the deaths' clocks run on every one) */
+    if (!plat_will_draw) {
+        for (s = 0; s < SEATS; ++s)
+            if (die_t[s] && die_t[s] < 48)
+                ++die_t[s];
+        return;
+    }
+#endif
+    walk_f = fr_walk[((uint8_t)frame_count >> 3) & 3];
     for (s = 0; s < SEATS; ++s) {
         if (!INPLAY(s)) {
             spr_hide(s);
@@ -328,11 +354,19 @@ void play_frame(void)
         if (s == my_seat && me) {
             disp_x[s] = mv_x;
             disp_y[s] = mv_y;
-            spr_arena(s, mv_x, mv_y, frame_of(mv_dir, moved), s);
+            spr_arena(s, mv_x, mv_y, FRAME_OF(mv_dir, moved), s);
         } else {
-            disp_x[s] = toward(disp_x[s], PL(s, P_X));
-            disp_y[s] = toward(disp_y[s], PL(s, P_Y));
-            spr_arena(s, disp_x[s], disp_y[s], frame_of(PL(s, P_DIR), PL(s, P_DIR) & P_DIR_MOVING), s);
+            pl = &PL(s, 0);
+            tw_at = disp_x[s];
+            tw_to = pl[P_X];
+            t = toward();
+            disp_x[s] = t;
+            tw_at = disp_y[s];
+            tw_to = pl[P_Y];
+            t = toward();
+            disp_y[s] = t;
+            d = pl[P_DIR];
+            spr_arena(s, disp_x[s], disp_y[s], FRAME_OF(d, d & P_DIR_MOVING), s);
         }
     }
 }

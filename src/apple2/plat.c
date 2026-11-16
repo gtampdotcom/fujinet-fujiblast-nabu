@@ -1,8 +1,8 @@
 /*
  * plat.c -- Apple II start-up, the 60 Hz clock and quitting.
  *
- * A 128K //e, //c or IIgs: double hi-res needs the aux RAM, and the clock
- * is the vertical blank (frame_tick in dhgr.s: polled on the //e and IIgs).
+ * A 128K //e, //c or IIgs: the art lives in the aux RAM, and the clock is
+ * the vertical blank (frame_tick in hgr.s: polled on the //e and IIgs).
  *
  * The game's loop is one pass a jiffy (src/main.c), but drawing four
  * sprites takes the Apple more than a jiffy. So frame_wait draws only when
@@ -27,15 +27,16 @@
 
 uint16_t frame_count;
 uint8_t plat_drew;                      /* this pass drew (input.c reads the stick then) */
+uint8_t plat_will_draw = 1;             /* (play.c: PLAT_SEATS_WHEN_DRAWN) */
 static uint16_t seed = 0x1234;
 
 /* lowlevel.s */
 void vbl_init(uint8_t mode);
-void dhgr_on(void);
-void dhgr_off(void);
+void hgr_on(void);
+void hgr_off(void);
 uint8_t __fastcall__ mli(uint8_t cmd, void *parms);
 void aux_put(void *dst, const void *src, uint16_t n);
-/* dhgr.s, gfx.c */
+/* hgr.s, gfx.c */
 void frame_tick(void);
 void gfx_render(void);
 void gfx_clear_pages(void);
@@ -105,7 +106,7 @@ static uint8_t load_gfx(void)
     static struct { uint8_t n; char *path; uint8_t *buf; uint8_t ref; } p_open = { 3, path, IOBUF, 0 };
     static struct { uint8_t n, ref; uint8_t *buf; uint16_t req, got; } p_read = { 4, 0, TEMP, 0x2000, 0 };
     static struct { uint8_t n, ref; } p_close = { 1, 0 };
-    uint8_t *aux = _AUXGFX__, err = 0;
+    uint8_t err = 0;
     uint16_t total = 0;
     if (mli(0xC8, &p_open))             /* OPEN */
         return 0;
@@ -114,8 +115,7 @@ static uint8_t load_gfx(void)
         err = mli(0xCA, &p_read);       /* READ */
         if (err || !p_read.got)
             break;
-        aux_put(aux, TEMP, p_read.got);
-        aux += p_read.got;
+        aux_put(_AUXGFX__ + total, TEMP, p_read.got);
         total += p_read.got;
     } while (p_read.got == 0x2000);
     mli(0xCC, &p_close);                /* CLOSE */
@@ -145,7 +145,7 @@ void plat_init(void)
 {
     vbl_init(boot_mode);
     gfx_clear_pages();
-    dhgr_on();
+    hgr_on();
     snd_init();
     input_init();
     gfx_init();
@@ -153,7 +153,7 @@ void plat_init(void)
 
 void plat_quit(void)
 {
-    dhgr_off();
+    hgr_off();
     exit(0);
 }
 
@@ -206,6 +206,8 @@ void frame_wait(void)
     }
     seed += frame_count;
     snd_tick();
+    /* the next pass is likely drawn if it starts this soon */
+    plat_will_draw = (uint16_t)(frame_count - seen) < 2;
 }
 
 uint8_t plat_rand(void)

@@ -7,6 +7,7 @@
 
         PUBLIC  _va_addr, _va_len, _va_src, _va_val
         PUBLIC  _va_write, _va_writef, _va_fill
+        PUBLIC  _map_next
         EXTERN  _vdp_busy, _vdp_pend, _vdp_catch_up
 
 ; set the write address va_addr, lock; DE the count, HL the source
@@ -31,13 +32,23 @@ unlock:
         ret     z
         jp      _vdp_catch_up
 
-; 50 T-states a byte
+; 37 T-states a byte up to 256 (the TMS9918A wants 29 or more between
+; writes while it draws), 50 for longer
 _va_write:
         ld      de,(_va_len)
         ld      a,d
         or      e
         ret     z
         call    setup
+        ld      a,d
+        or      a
+        jr      nz,wl
+        ld      b,e             ; e = 0 can't be: d = 0 and a count of 0 returned
+wb:     ld      a,(hl)
+        out     ($A0),a
+        inc     hl
+        djnz    wb
+        jr      unlock
 wl:     ld      a,(hl)
         out     ($A0),a
         inc     hl
@@ -85,6 +96,52 @@ fi:     ld      a,h
         or      e
         jr      nz,fi
         jr      unlock
+
+; uint8_t map_next(const uint8_t *map, const uint8_t *drawn, uint8_t from)
+; (play.c, PLAT_MAP_NEXT) the first tile from `from` on where the map and
+; what is drawn differ, or TILES: about 50 T-states a tile against some 400
+; as C (the H89's, src/h89/h19cell.asm). zsdcc's arguments on the stack.
+TILES   equ     143             ; ARENA_W * ARENA_H
+
+_map_next:
+        ld      hl,2
+        add     hl,sp
+        ld      e,(hl)
+        inc     hl
+        ld      d,(hl)                  ; DE = map
+        inc     hl
+        ld      c,(hl)
+        inc     hl
+        ld      b,(hl)                  ; BC = drawn
+        inc     hl
+        ld      a,(hl)                  ; from
+        cp      TILES
+        jr      nc,mn_none
+        ld      l,a
+        ld      h,0
+        add     hl,de
+        ex      de,hl                   ; DE = map + from
+        ld      l,a
+        ld      h,0
+        add     hl,bc                   ; HL = drawn + from
+        neg
+        add     a,TILES
+        ld      b,a                     ; B = tiles left
+mn_loop:
+        ld      a,(de)
+        cp      (hl)
+        jr      nz,mn_found
+        inc     de
+        inc     hl
+        djnz    mn_loop
+mn_none:
+        ld      l,TILES
+        ret
+mn_found:
+        ld      a,TILES
+        sub     b
+        ld      l,a
+        ret
 
         SECTION bss_user
 _va_addr:       defs    2

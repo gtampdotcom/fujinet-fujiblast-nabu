@@ -13,7 +13,9 @@
  * cells from column 5), row 23 and columns 4 and 31 its wall, columns 0-3
  * the player's stats and the round. A tile's 4 cells are characters fixed
  * for the screen (gfxcodes.h); the tiles that animate have their characters
- * redrawn in the frame's blank, two a frame (anim_step).
+ * redrawn in the frame's blank, one or two a frame (anim_step), and only the
+ * kinds on screen (anim_use): redrawing all 15 every phase took about half
+ * the Z80's time.
  *
  * Text is the Namco font, a cell a character in the colour wanted: a
  * character for each (glyph, colours) in use is made when first drawn, and
@@ -341,6 +343,21 @@ void gfx_trophies(uint8_t row, uint8_t col, uint8_t n)
 /* ---- the arena ----------------------------------------------------------------- */
 
 static uint8_t anim_ph[N_ANIM], anim_next;
+static uint8_t anim_use[N_ANIM];        /* tiles of each animated kind on screen */
+static uint8_t at_tile[ARENA_W * ARENA_H];  /* the tile drawn at each place (255: none) */
+static uint8_t stat_on[5];              /* the left panel shows powerup i's icon */
+static uint16_t bombs_t;                /* frame_count when a moving bomb was last drawn */
+static uint8_t anim4[N_ANIM][4][64];    /* each kind's phases: 4 patterns, then 4 colours, in a row */
+static uint8_t anim4_made;
+
+static void anim_restart(void);
+
+static void use_tile(uint8_t tile, int8_t d)
+{
+    uint8_t k;
+    if (tile < N_TILEKINDS && (k = tile_anim_kind[tile]) < N_ANIM)
+        anim_use[k] += d;
+}
 
 void gfx_arena(void)
 {
@@ -350,6 +367,20 @@ void gfx_arena(void)
         put_cell(i, arena_cells[i], 1);
     next_code = ARENA_CELLS;
     memset(anim_ph, 0, sizeof(anim_ph));
+    memset(anim_use, 0, sizeof(anim_use));
+    anim_restart();
+    if (!anim4_made) {
+        uint8_t k, ph, j;
+        for (k = 0; k < N_ANIM; ++k)
+            for (ph = 0; ph < 4; ++ph)
+                for (j = 0; j < 4; ++j) {
+                    memcpy(anim4[k][ph] + j * 8, anim_cells[k][ph][j], 8);
+                    memcpy(anim4[k][ph] + 32 + j * 8, anim_cells[k][ph][j] + 8, 8);
+                }
+        anim4_made = 1;
+    }
+    memset(at_tile, 255, sizeof(at_tile));
+    memset(stat_on, 0, sizeof(stat_on));
     anim_next = 0;
     arena_on = 1;
     gfx_row(0, ROW_BIG, PAL_HUD);
@@ -375,11 +406,18 @@ static void put4(uint16_t at, const uint8_t *t)
 
 void gfx_tile(uint8_t c, uint8_t r, uint8_t tile)
 {
+    uint8_t *at = at_tile + r * ARENA_W + c;
+    if (*at != tile) {
+        use_tile(*at, -1);
+        use_tile(tile, 1);
+        *at = tile;
+    }
     put4(NT(1 + r * 2, ARENA_COL + c * 2), tile_chars[tile]);
 }
 
 void gfx_bomb_at(uint8_t hx, uint8_t hy, uint8_t dud)
 {
+    bombs_t = frame_count;      /* (a moving bomb: bombs and duds animate a while) */
     put4(NT(1 + hy, ARENA_COL + hx), tile_chars[dud ? T_DUD : T_BOMB]);
 }
 
@@ -389,6 +427,7 @@ void gfx_stat(uint8_t i, uint8_t n)
     uint16_t at = NT(3 + i * 4, 0);
     uint8_t d[2];
     static const uint8_t blank[2] = { CH_PANEL, CH_PANEL }, zero4[4] = { CH_PANEL, CH_PANEL, CH_PANEL, CH_PANEL };
+    stat_on[i] = i < 3 || n;
     if (i >= 3 && !n) {
         put4(at, zero4);
         vwrite(at + 34, blank, 2);
@@ -458,37 +497,80 @@ static void put_sprite(uint8_t slot, uint8_t x, uint8_t y, uint8_t name, uint8_t
 }
 
 /* The animated tiles' characters, redrawn for the phase: what this frame has time for. */
+static uint8_t anim_wanted(uint8_t k)
+{
+    if (anim_use[k])
+        return 1;
+    if (k >= AK_FIRE)
+        return stat_on[k - AK_FIRE];
+    return (k == AK_BOMB || k == AK_DUD) && (uint16_t)(frame_count - bombs_t) < 30;
+}
+
+/* kind k's 4 characters (consecutive codes) at phase ph: in each third, the
+ * 4 patterns as one write and the 4 colours as another */
+static void put_anim(uint8_t k, uint8_t ph)
+{
+    const uint8_t *b = anim4[k][ph];
+    uint16_t a = (uint16_t)(ANIM_BASE + k * 4) * 8;
+    uint8_t was = blanked;
+    blanked = gfx_fast;
+    vwrite(VR_PAT + a, b, 32);
+    vwrite(VR_PAT + a + 0x800, b, 32);
+    vwrite(VR_PAT + a + 0x1000, b, 32);
+    vwrite(VR_COL + a, b + 32, 32);
+    vwrite(VR_COL + a + 0x800, b + 32, 32);
+    vwrite(VR_COL + a + 0x1000, b + 32, 32);
+    blanked = was;
+}
+
+static uint8_t done_ph = 255;           /* every kind wanted is drawn at this phase */
+
+static void anim_restart(void)
+{
+    done_ph = 255;
+}
+
 static void anim_step(void)
 {
-    uint8_t ph = (frame_count >> 3) & 3, k, tries, budget = gfx_fast ? 2 : 1, j;
+    uint8_t ph = (frame_count >> 3) & 3, k, tries, budget = gfx_fast ? 2 : 1;
+    if (ph == done_ph)
+        return;                 /* (a kind that turns up meanwhile waits for the next phase) */
     for (tries = 0; tries < N_ANIM && budget; ++tries) {
         k = anim_next;
         if (++anim_next >= N_ANIM)
             anim_next = 0;
-        if (anim_ph[k] == ph)
+        if (anim_ph[k] == ph || !anim_wanted(k))
             continue;
-        for (j = 0; j < 4; ++j)
-            put_cell(ANIM_BASE + k * 4 + j, anim_cells[k][ph][j], gfx_fast);
+        put_anim(k, ph);
         anim_ph[k] = ph;
         --budget;
     }
+    if (tries == N_ANIM)
+        done_ph = ph;
 }
 
 /* Draw the sprites as set (frame_wait does): the attribute table, and the
  * animation. */
+/* 16 sprites off the bottom */
+static const uint8_t sat_off[64] = {
+    0xC0, 0, 0, 0, 0xC0, 0, 0, 0, 0xC0, 0, 0, 0, 0xC0, 0, 0, 0,
+    0xC0, 0, 0, 0, 0xC0, 0, 0, 0, 0xC0, 0, 0, 0, 0xC0, 0, 0, 0,
+    0xC0, 0, 0, 0, 0xC0, 0, 0, 0, 0xC0, 0, 0, 0, 0xC0, 0, 0, 0,
+    0xC0, 0, 0, 0, 0xC0, 0, 0, 0, 0xC0, 0, 0, 0, 0xC0, 0, 0, 0,
+};
+
 void spr_flush(void)
 {
     static uint8_t rot;
-    uint8_t n, m, k, near, crowd = 0, base, f, q, was = blanked;
-    memset(sat, 0, sizeof(sat));
-    for (k = 0; k < 16; ++k)
-        sat[k * 4] = 0xC0;              /* off the bottom */
-    for (n = 0; n < SEATS; ++n) {
+    uint8_t n, m, near, crowd = 0, base, f, q, was = blanked, y, c, *p;
+    memcpy(sat, sat_off, sizeof(sat));
+    for (n = 0; n < SEATS && !crowd; ++n) {
         if (!son[n] || sbig[n])
             continue;
         near = 0;
+        y = sy[n];
         for (m = 0; m < SEATS; ++m)
-            if (son[m] && !sbig[m] && (uint8_t)(sy[m] - sy[n]) < 16)
+            if (son[m] && !sbig[m] && (uint8_t)(sy[m] - y) < 16)
                 ++near;
         if (near >= 3)
             crowd = 1;
@@ -505,9 +587,17 @@ void spr_flush(void)
                 put_sprite(12 + q, sx[n] + (q & 1) * 16, sy[n] + (q >> 1) * 16, base + 16, seat_colour[sseat[n]]);
             }
         } else {
-            k = ((n + rot) & 3) * 2;
-            put_sprite(k, sx[n], sy[n], sfr[n] * 8, BLACK);
-            put_sprite(k + 1, sx[n], sy[n], sfr[n] * 8 + 4, seat_colour[sseat[n]]);
+            p = sat + (((n + rot) & 3) << 3);   /* sprites 2k and 2k+1 */
+            y = sy[n] - 1;
+            c = sfr[n] << 3;
+            p[0] = y;
+            p[1] = sx[n];
+            p[2] = c;
+            p[3] = BLACK;
+            p[4] = y;
+            p[5] = sx[n];
+            p[6] = c + 4;
+            p[7] = seat_colour[sseat[n]];
         }
     }
     blanked = was || gfx_fast;

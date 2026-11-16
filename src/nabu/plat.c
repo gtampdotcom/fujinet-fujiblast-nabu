@@ -21,6 +21,7 @@
 
 uint16_t frame_count;
 uint8_t vdp_seen, gfx_fast;
+uint8_t plat_will_draw = 1;     /* (play.c: PLAT_SEATS_WHEN_DRAWN) this pass draws */
 uint16_t nabu_passes, nabu_late, nabu_skip;     /* for a profile */
 static uint16_t seed = 0x1234;
 static uint8_t synth;           /* frames made up in a row (0: the interrupt works) */
@@ -67,7 +68,9 @@ void plat_quit(void)
  * next frame has already come is made up by one that doesn't wait or draw:
  * the game keeps real time when the drawing is slower than 60 a second.
  * Called as the frame comes, the blank is ours to draw in flat out. */
+#ifndef CATCH_UP
 #define CATCH_UP 20             /* frames behind we make up; further, we let go */
+#endif
 #define SPINS_WAIT  6000u       /* ~60 T-states a spin: ~6 frames, then make one up */
 #define SPINS_SYNTH 1000u       /* ... about a frame, once the interrupt has plainly failed */
 
@@ -83,8 +86,10 @@ void frame_wait(void)
     if (d >= 2) {
         ++seen;                 /* behind: a pass with no waiting, no drawing */
         ++nabu_skip;
+        plat_will_draw = 0;
         return;
     }
+    plat_will_draw = 1;
     gfx_fast = d == 0;
     nabu_late += d;
     limit = synth >= 3 ? SPINS_SYNTH : SPINS_WAIT;

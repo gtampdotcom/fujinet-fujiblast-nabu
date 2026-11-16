@@ -53,7 +53,10 @@ if not exist "%GEN_DIR%\nabu\gfxdata.c" (
 >> "%GEN_DIR%\config.h" echo #define DEFAULT_SERVER "%SERVER%"
 
 rem (zcc hands a define on through a shell: a string is quoted twice)
-set CFLAGS=+nabu -vn -compiler=sdcc -SO3 -D__NABU__ -Isrc -Isrc\platform-specific -Isrc\nabu -Igen -Igen\nabu
+rem (upstream's options for a slow CPU: a commit copies only what changed, the seats laid
+rem out only for a pass that draws, the map's scan in assembly; TOWARD_PACED: the others drawn
+rem walking at about their own pace)
+set CFLAGS=+nabu -vn -compiler=sdcc -SO3 -D__NABU__ -DPLAT_COMMIT_SPAN -DPLAT_FAST_SEAT -DPLAT_SEATS_WHEN_DRAWN -DPLAT_MAP_NEXT -DTOWARD_PACED -Isrc -Isrc\platform-specific -Isrc\nabu -Igen -Igen\nabu
 if "%DEBUG%"=="1" set CFLAGS=!CFLAGS! -DNABU_DEBUG
 if not "%TEST_SCENE%"=="" set CFLAGS=!CFLAGS! -DTEST_SCENE=%TEST_SCENE% -DTEST_ARG=0
 set OBJS=

@@ -384,3 +384,43 @@ _vrd_dst:       defs    2
 _vdp_busy:      defs    1
 _vdp_pend:      defs    1
 rx_slowc:       defs    1
+
+
+; uint16_t nabu_fletcher(const uint8_t *p, uint8_t n): nstrans.c's frame sum,
+; both sums mod 255 (a carry out of a byte is 256 = 1, mod 255; 255 is 0).
+; L = s1, H = s2. zsdcc's arguments on the stack.
+        SECTION code_user
+        PUBLIC  _nabu_fletcher
+_nabu_fletcher:
+        ld      hl,2
+        add     hl,sp
+        ld      e,(hl)
+        inc     hl
+        ld      d,(hl)                  ; DE = p
+        inc     hl
+        ld      b,(hl)                  ; B = n
+        ld      c,0                     ; s1
+        ld      l,c                     ; s2
+        ld      a,b
+        or      a
+        jr      z,fl_done
+fl_loop:
+        ld      a,(de)
+        add     a,c
+        adc     a,0
+        cp      255
+        jr      nz,fl_s1
+        xor     a
+fl_s1:  ld      c,a
+        add     a,l
+        adc     a,0
+        cp      255
+        jr      nz,fl_s2
+        xor     a
+fl_s2:  ld      l,a
+        inc     de
+        djnz    fl_loop
+fl_done:
+        ld      h,l
+        ld      l,c
+        ret

@@ -5,13 +5,17 @@
 //
 // Lobby listing is off unless FUJIBLAST_LOBBY is qa, prod or a lobby URL;
 // then FUJIBLAST_SERVER_URL (tcp://host:9910/) and FUJIBLAST_CLIENT_ATARI
-// (tnfs://host/path/fujiblst.atr), _APPLE2, _MSDOS and _INTV say what it
-// lists.
+// (tnfs://host/path/fujiblst.atr), _APPLE2, _MSDOS, _INTV, _ADAM, _O2, _ARCADIA, _ASTROCADE, _CHANNELF, _COLECO, _ATARI2600, _ATARI7800, _ATARI5200, _COCO, _NES, _SMS, _H89, _MSX and _STUDIO2
+// say what it lists.
+//
+// House bots (-bots / FUJIBLAST_BOTS, default blast1=1,blast2=2,blast3=3) sit
+// at the public tables; a person is the host, the bots never start a game.
 package main
 
 import (
 	"flag"
 	"log"
+	"net"
 	"os"
 	"os/signal"
 	"syscall"
@@ -32,6 +36,7 @@ func env(k, def string) string {
 func main() {
 	addr := flag.String("stream", env("FUJIBLAST_STREAM_ADDR", ":9910"), "stream listen address")
 	seed := flag.Uint64("seed", uint64(time.Now().UnixNano()), "arena seed")
+	bots := flag.String("bots", env("FUJIBLAST_BOTS", server.DefaultBots), "house bots per table (table=n,...; empty: none)")
 	cheader := flag.Bool("cheader", false, "write src/proto.h to stdout and exit")
 	flag.Parse()
 	if *cheader {
@@ -39,6 +44,10 @@ func main() {
 		return
 	}
 
+	plan, err := server.ParseBots(*bots)
+	if err != nil {
+		log.Fatal(err)
+	}
 	s := server.New(*seed)
 	stop := make(chan struct{})
 	done := make(chan struct{})
@@ -47,7 +56,7 @@ func main() {
 		if ep == "" {
 			ep = lb
 		}
-		cfg := lobby.Config{Endpoint: ep, Game: "FujiBlast", AppKey: 16, Server: "FujiBlast",
+		cfg := lobby.Config{Endpoint: ep, Game: "FujiBlast", AppKey: 16,
 			Region: env("FUJIBLAST_REGION", "us"), ServerURL: env("FUJIBLAST_SERVER_URL", "tcp://localhost:9910/")}
 		if u := os.Getenv("FUJIBLAST_CLIENT_ATARI"); u != "" {
 			cfg.Clients = append(cfg.Clients, lobby.Client{Platform: "atari", URL: u})
@@ -64,21 +73,68 @@ func main() {
 		if u := os.Getenv("FUJIBLAST_CLIENT_ADAM"); u != "" {
 			cfg.Clients = append(cfg.Clients, lobby.Client{Platform: "adam", URL: u})
 		}
+		if u := os.Getenv("FUJIBLAST_CLIENT_O2"); u != "" {
+			cfg.Clients = append(cfg.Clients, lobby.Client{Platform: "o2", URL: u})
+		}
+		if u := os.Getenv("FUJIBLAST_CLIENT_ARCADIA"); u != "" {
+			cfg.Clients = append(cfg.Clients, lobby.Client{Platform: "arcadia", URL: u})
+		}
+		if u := os.Getenv("FUJIBLAST_CLIENT_ASTROCADE"); u != "" {
+			cfg.Clients = append(cfg.Clients, lobby.Client{Platform: "astrocade", URL: u})
+		}
+		if u := os.Getenv("FUJIBLAST_CLIENT_CHANNELF"); u != "" {
+			cfg.Clients = append(cfg.Clients, lobby.Client{Platform: "channelf", URL: u})
+		}
+		if u := os.Getenv("FUJIBLAST_CLIENT_COLECO"); u != "" {
+			cfg.Clients = append(cfg.Clients, lobby.Client{Platform: "coleco", URL: u})
+		}
+		if u := os.Getenv("FUJIBLAST_CLIENT_ATARI2600"); u != "" {
+			cfg.Clients = append(cfg.Clients, lobby.Client{Platform: "a2600", URL: u})
+		}
+		if u := os.Getenv("FUJIBLAST_CLIENT_ATARI7800"); u != "" {
+			cfg.Clients = append(cfg.Clients, lobby.Client{Platform: "atari7800", URL: u})
+		}
+		if u := os.Getenv("FUJIBLAST_CLIENT_ATARI5200"); u != "" {
+			cfg.Clients = append(cfg.Clients, lobby.Client{Platform: "atari5200", URL: u})
+		}
+		if u := os.Getenv("FUJIBLAST_CLIENT_COCO"); u != "" {
+			cfg.Clients = append(cfg.Clients, lobby.Client{Platform: "coco", URL: u})
+		}
+		if u := os.Getenv("FUJIBLAST_CLIENT_NES"); u != "" {
+			cfg.Clients = append(cfg.Clients, lobby.Client{Platform: "nes", URL: u})
+		}
+		if u := os.Getenv("FUJIBLAST_CLIENT_SMS"); u != "" {
+			cfg.Clients = append(cfg.Clients, lobby.Client{Platform: "sms", URL: u})
+		}
+		if u := os.Getenv("FUJIBLAST_CLIENT_H89"); u != "" {
+			cfg.Clients = append(cfg.Clients, lobby.Client{Platform: "h89", URL: u})
+		}
+		if u := os.Getenv("FUJIBLAST_CLIENT_MSX"); u != "" {
+			cfg.Clients = append(cfg.Clients, lobby.Client{Platform: "msx", URL: u})
+		}
+		if u := os.Getenv("FUJIBLAST_CLIENT_STUDIO2"); u != "" {
+			cfg.Clients = append(cfg.Clients, lobby.Client{Platform: "studio2", URL: u})
+		}
 		pub := lobby.New(cfg)
-		s.OnChange = func(ti server.TableInfo) { pub.Notify(lobby.Table{ID: ti.ID, Players: ti.Seated}) }
+		s.OnChange = func(ti server.TableInfo) { pub.Notify(lobby.Table{ID: ti.ID, Name: ti.Name, Players: ti.Seated}) }
 		var ts []lobby.Table
 		for _, ti := range s.Tables(false) {
-			ts = append(ts, lobby.Table{ID: ti.ID, Players: ti.Seated})
+			ts = append(ts, lobby.Table{ID: ti.ID, Name: ti.Name, Players: ti.Seated})
 		}
 		log.Printf("lobby: %s", cfg)
 		go func() { pub.Run(ts, stop); close(done) }()
 	} else {
 		close(done)
 	}
-	if _, err := s.Listen(*addr); err != nil {
+	la, err := s.Listen(*addr)
+	if err != nil {
 		log.Fatal(err)
 	}
 	go s.Run(time.Second/60, stop)
+	if len(plan) > 0 {
+		_, port, _ := net.SplitHostPort(la.String())
+		go server.HouseBots(net.JoinHostPort("127.0.0.1", port), plan, stop)
+	}
 
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)

@@ -57,7 +57,13 @@ static uint8_t handle = H_ANY;
 static uint8_t down, bad, lost, garbled;
 static uint8_t rbuf[RBUF];
 static uint8_t rlen, rpos;
-static uint16_t polled;
+static uint16_t polled;         /* the pass that last asked the adapter */
+static uint16_t polled_f;       /* and its frame */
+#ifndef POLL_GAP
+#define POLL_GAP 3              /* frames between two asks: the server sends every 3 */
+#endif
+extern uint16_t nabu_passes;    /* plat.c: frame_wait's passes */
+extern uint8_t plat_will_draw;  /* plat.c: 0 on a pass made up to catch up */
 static uint8_t dlen, drem, dzero, dbad;     /* the frame being decoded */
 static uint8_t obuf[OMAX], olen, oover;     /* the frame being put */
 static uint8_t qbuf[QMAX], qlen;
@@ -106,6 +112,7 @@ static void tx16(uint16_t v)
     hcca_tx((uint8_t)(v >> 8));
 }
 
+#ifdef NST_ASK_FIRST
 static uint8_t call_avail(int32_t *n)
 {
     uint8_t ok;
@@ -118,6 +125,7 @@ static uint8_t call_avail(int32_t *n)
     hcca_end();
     return ok;
 }
+#endif
 
 static uint8_t call_read(uint8_t max, int32_t *n)
 {
@@ -188,14 +196,19 @@ uint8_t nst_open(const char *host, uint16_t port)
     olen = oover = qlen = 0;
     down = bad = lost = garbled = 0;
     nst_taken = 0;
-    polled = frame_count;
+    polled = nabu_passes;
+    polled_f = frame_count - POLL_GAP;
     nst_put(0);                 /* ends whatever came before: our first frame is clean */
     return 1;
 }
 
+static void write_queue(void);
+
 void nst_close(void)
 {
     if (handle != H_ANY) {
+        if (qlen)
+            write_queue();      /* (a goodbye goes out) */
         hcca_begin();
         hcca_tx(RN_TCP_CLOSE);
         hcca_tx(handle);
@@ -237,8 +250,16 @@ static void write_queue(void)
     lost = 1;                   /* a frame that didn't go: the link is out of step */
 }
 
-/* One look at the adapter: what is queued goes out; else (once a frame) the
- * socket is asked how much waits, and read if some does. */
+/* One look at the adapter, once a pass at most: the frames queued go out in one
+ * write, and the socket is read (every POLL_GAP frames: each call is a
+ * round trip).
+ *
+ * Once a pass, not once a frame: a real adapter takes milliseconds to answer
+ * each call (a USB serial link alone ~16 ms), the frame's interrupt then lands
+ * after the call, and net_poll's loop asked again and again; 3 bots on metal
+ * ran at about a frame a second. A pass made up to catch up (it doesn't draw)
+ * doesn't ask at all, so the game gets back in step; and the server sends
+ * only every 3 frames, so it is asked every POLL_GAP frames at most. */
 static void step(void)
 {
     int32_t n;
@@ -246,13 +267,15 @@ static void step(void)
 
     if (handle == H_ANY || rpos < rlen)
         return;
-    if (qlen) {
+    if (polled == nabu_passes || !plat_will_draw)
+        return;
+    if (frame_count - polled_f < POLL_GAP)
+        return;
+    polled = nabu_passes;
+    polled_f = frame_count;
+    if (qlen)
         write_queue();
-        return;
-    }
-    if (polled == frame_count)
-        return;
-    polled = frame_count;
+#ifdef NST_ASK_FIRST
     if (!call_avail(&n)) {
         if (bad < 255)
             ++bad;
@@ -268,6 +291,11 @@ static void step(void)
     if (n == 0)
         return;
     want = n > RBUF ? RBUF : (uint8_t)n;
+#else
+    /* No D2 first: the Internet Adapter's D3 answers at once with what waits,
+     * up to the length asked (0: none), so one call a poll, not two. */
+    want = RBUF;
+#endif
     if (!call_read(want, &n)) {
         garbled = 1;            /* some were taken from the socket and lost */
         if (bad < 255)
@@ -279,6 +307,8 @@ static void step(void)
             ++down;
         return;
     }
+    down = 0;
+    bad = 0;
     rlen = (uint8_t)n;
     rpos = 0;
 }
@@ -292,37 +322,31 @@ void nst_put(uint8_t c)
         oover = 1;
     if (c)
         return;
+    if (handle != H_ANY && !oover && qlen + olen > QMAX)
+        write_queue();          /* full: what waits goes now */
     if (!oover && handle != H_ANY && qlen + olen <= QMAX) {
         memcpy(qbuf + qlen, obuf, olen);
-        qlen += olen;
-        write_queue();          /* it goes now */
+        qlen += olen;           /* it goes at the next pass's step, with the others */
     } else if (handle != H_ANY) {
         lost = 1;
     }
     olen = oover = 0;
 }
 
-/* a + b, mod 255, with no division (256 is 1, mod 255) */
-static uint8_t add255(uint8_t a, uint8_t b)
-{
-    a += b;
-    if (a < b)
-        ++a;
-    return a == 255 ? 0 : a;
-}
+/* nabu_hw.asm: the Fletcher sum of n bytes (sums mod 255, as add255 made
+ * them): s1 in the low byte, s2 the high; ~50 T-states a byte against ~300 */
+extern uint16_t nabu_fletcher(const uint8_t *p, uint8_t n);
 
 /* The frame's end: its Fletcher sum checked; its length, or 255. */
 static uint8_t frame_end(void)
 {
-    uint8_t i, o = dlen, s1 = 0, s2 = 0;
+    uint8_t o = dlen;
+    uint16_t f;
     if (dbad || drem || o < 3)
         return 255;
     o -= 2;
-    for (i = 0; i < o; ++i) {
-        s1 = add255(s1, nst_buf[i]);
-        s2 = add255(s2, s1);
-    }
-    if (s1 != nst_buf[o] || s2 != nst_buf[o + 1])
+    f = nabu_fletcher(nst_buf, o);
+    if ((uint8_t)f != nst_buf[o] || (uint8_t)(f >> 8) != nst_buf[o + 1])
         return 255;
     return o;
 }
