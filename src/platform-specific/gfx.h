@@ -7,10 +7,13 @@
 
 #define SCR_ROWS 25
 
-#if defined(__ADAM__) || defined(__MSX__) || defined(__NABU__)
+#if defined(__ADAM__) || defined(__MSX__)
 #define TITLE_Y(n) (80 + (n) * 8)  /* the VDP shows 4 sprites a line: the bombers stagger */
 #endif
 #ifdef __NABU__
+extern uint8_t f18a;            /* (src/nabu/gfx.c) on an F18A a bomber is one sprite: */
+#define TITLE_Y(n) (f18a ? 96 : 80 + (n) * 8)  /* all four walk the horizon, as on VGA */
+#define CENTRE_W40 36           /* text columns 2-33 are the screen's 32 */
 #define QUIT_HINT "ESC: QUIT"
 #define TAGLINE   "BOMBS AND BLASTS FOR 2-4"
 #define HINT_LR   "(L/R)"

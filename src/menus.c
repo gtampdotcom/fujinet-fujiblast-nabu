@@ -44,6 +44,7 @@ uint8_t table_list(void)
 /* with an F18A (or a PICO9918), SYM switches its colour screens and the
  * stock TMS9918A ones at any time (src/nabu/gfx.c, input.c): the title says so */
 extern uint8_t f18a, f18a_found;
+void gfx_text_half(uint8_t row, uint8_t col, const char *s, uint8_t colour);
 static void video_hint(void)
 {
     centre(23, f18a ? "SYM: VIDEO F18A   " QUIT_HINT : "SYM: VIDEO STOCK  " QUIT_HINT, 0, 40);
@@ -56,16 +57,21 @@ void title(void)
     uint16_t t = 0;
 #ifdef __NABU__
     uint8_t was_f18a;
+redraw:                                 /* (SYM: the other video) */
+    was_f18a = f18a;
 #endif
     gfx_begin();
     gfx_logo(3);
     gfx_row(8, ROW_BIG, PAL_MENU);
+#ifdef __NABU__
+    gfx_text_half(8, 4, "FOR FUJINET", 0);  /* (11 letters: centred by half a cell) */
+#else
     centre(8, "FOR FUJINET", 0, 20);
+#endif
     centre(18, "PRESS FIRE", 0, 40);
     centre(21, TAGLINE, 0, 40);
 #ifdef QUIT_HINT
 #ifdef __NABU__
-    was_f18a = f18a;
     if (f18a_found)                     /* (the switch beside it) */
         video_hint();
     else
@@ -73,7 +79,8 @@ void title(void)
     centre(23, QUIT_HINT, 0, 40);       /* (a platform that can quit) */
 #endif
     gfx_show();
-    snd_music(MUS_TITLE);
+    if (!t)
+        snd_music(MUS_TITLE);
     for (;;) {
         tick();
         ++t;
@@ -88,10 +95,8 @@ void title(void)
             plat_quit();
 #endif
 #ifdef __NABU__
-        if (f18a != was_f18a) {
-            was_f18a = f18a;
-            video_hint();
-        }
+        if (f18a != was_f18a)
+            goto redraw;
 #endif
     }
     snd_stop();

@@ -19,6 +19,12 @@ The 64 colours, for two sets of screens (the arena; the menus):
 Text is drawn at run time from the font in the seat groups (a shade a
 glyph line, VGA's gradient letters), on entry 0.
 
+The title has a palette of its own (f_pal_title): VGA's night sky over dark
+ground (vgapal._TITLE), a tile a row (f_title_band: the row's lines dithered
+in the row's group), the logo in one group, gold text on the sky's row 7
+(group 5) and silver on the ground (group 7): a title glyph is its row's
+tile with the letter's pixels in the shades (entries 2-4).
+
 VGA cycles the fire's colours; here each animation phase is the tile drawn
 in that phase's fire colours (the phases of src/nabu/gfx.c's anim_step).
 
@@ -139,6 +145,69 @@ def kmeans(pts, init, fixed0, it=10):
             break
         cs = new
     return cs
+
+
+def avg(cs):
+    return tuple(sum(c[i] for c in cs) / len(cs) for i in range(3))
+
+
+def kmeans_n(cols, n, it=30):
+    """n colours for the colours cols (in order along a gradient: started
+    from n even runs of it)."""
+    k = len(cols)
+    cs = [q4(avg(cols[i * k // n:(i + 1) * k // n])) for i in range(n)]
+    for _ in range(it):
+        acc = [[] for _ in range(n)]
+        for c in cols:
+            acc[min(range(n), key=lambda j: dist(c, cs[j]))].append(c)
+        new = [q4(avg(a)) if a else cs[j] for j, a in enumerate(acc)]
+        if new == cs:
+            break
+        cs = new
+    return cs
+
+
+BAYER = [[0, 8, 2, 10], [12, 4, 14, 6], [3, 11, 1, 9], [15, 7, 13, 5]]
+
+
+def dither_row(targets, g, allowed):
+    """8 lines of colour targets -> 64 slots of group g (from allowed): each
+    line between its best pair of colours, ordered dither. Returns (slots, error)."""
+    slots, err = [], 0
+    for y, t in enumerate(targets):
+        best = None
+        for a in allowed:
+            for b in allowed:
+                ca, cb = g[a], g[b]
+                d = [cb[i] - ca[i] for i in range(3)]
+                dd = sum(v * v for v in d)
+                al = 0.0 if not dd else max(0.0, min(1.0, sum((t[i] - ca[i]) * d[i] for i in range(3)) / dd))
+                m = tuple(ca[i] + d[i] * al for i in range(3))
+                e = dist(m, t) + 0.15 * dd * al * (1 - al)   # (a wide pair's grain counts too)
+                if best is None or e < best[0]:
+                    best = (e, a, b, al)
+        e, a, b, al = best
+        err += e
+        for x in range(8):
+            slots.append(b if (BAYER[y & 3][x & 3] + 0.5) / 16 < al else a)
+    return slots, err
+
+
+def slots_cell(slots, g):
+    planes = []
+    for b in range(3):
+        for y in range(8):
+            v = 0
+            for x in range(8):
+                v = v << 1 | (slots[y * 8 + x] >> b & 1)
+            planes.append(v)
+    return planes + [g << 1]
+
+
+def encode_in(cell, groups, g):
+    """encode, in group g."""
+    slots = [min(range(8), key=lambda j: dist(p, groups[g][j])) for p in cell]
+    return slots_cell(slots, g)
 
 
 def cell_err(cell, g):
@@ -365,6 +434,49 @@ def main():
     enc_logo = [encode(c, M) for c in lcells_rgb]
     enc_trophy = [encode(c, M) for c in trophy_rgb]
 
+    # ---- the title: VGA's sky (NABU line y is VGA's y + 8: row r is its row r + 1)
+    def tline(y):
+        return V._TITLE(y + 8)
+    T = [list(g) for g in seat_groups(MENU_BG)]
+    for i, c in enumerate(kmeans_n([tline(y) for y in list(range(0, 16)) + list(range(40, 48))], 4)):
+        T[i][0] = c                     # (a sprite's 0 is clear: free for the sky)
+    logo_bg = q4(avg([tline(y) for y in range(16, 40)]))
+    tl_rgb = [tuple(logo_bg if p == lpal[0] else p for p in c) for c in lcells_rgb]
+    pts = {}
+    for c in tl_rgb:
+        for p in c:
+            pts[p] = pts.get(p, 0) + 1
+    u = [p for p in sorted(pts, key=lambda p: -pts[p]) if p != logo_bg]
+    G4 = kmeans(pts, [logo_bg] + (u + [u[-1]] * 7)[:7], True, 30)
+
+    def shades(base):                   # entries 2-4: dark, mid, light (TEXT_LINES)
+        return [q4(PAL[base + 5]), q4(PAL[base + 3]), q4(PAL[base + 1])]
+    k5 = kmeans_n([tline(y) for y in range(40, 64)], 5)
+    G5 = k5[:2] + shades(V.GOLD) + k5[2:]
+    G6 = kmeans_n([tline(y) for y in range(64, 104)], 8)
+    k7 = kmeans_n([tline(y) for y in range(104, 192)], 5)
+    G7 = k7[:2] + shades(V.SILVER) + k7[2:]
+    T += [G4, G5, G6, G7]
+    BGE = [0, 1, 5, 6, 7]               # a text group's sky entries
+    enc_band = []
+    for r in range(24):
+        targets = [tline(r * 8 + y) for y in range(8)]
+        if 2 <= r <= 4:                 # beside the logo: its backdrop
+            enc_band.append([0] * 24 + [4 << 1])
+            continue
+        if r == 7 or r >= 13:           # rows with text: its group
+            cands = [5 if r == 7 else 7]
+        else:
+            cands = [0, 1, 2, 3, 5, 6]
+        best = None
+        for g in cands:
+            allowed = [0] if g < 4 else (BGE if g in (5, 7) else list(range(8)))
+            sl, e = dither_row(targets, T[g], allowed)
+            if best is None or e < best[0]:
+                best = (e, g, sl)
+        enc_band.append(slots_cell(best[2], best[1]))
+    enc_tlogo = [encode_in(c, T, 4) for c in tl_rgb]
+
     # ---- sprites
     spr = sprite_codes("sprites.png", 16, 16, len(SPRITES))
     big = sprite_codes("bigwin.png", 32, 32, 2)
@@ -386,6 +498,9 @@ def main():
          "",
          "extern const uint16_t f_pal_arena[64];     /* 0RGB */",
          "extern const uint16_t f_pal_menu[64];",
+         "extern const uint16_t f_pal_title[64];",
+         "extern const uint8_t f_title_band[24][25];  /* the title's rows: its sky, a tile a row */",
+         "extern const uint8_t f_tlogo_cells[F_LOGO_CELLS][25];  /* the logo in the title's palette */",
          "extern const uint8_t f_arena_cells[F_ARENA_CELLS][25];  /* planes 0-2, the attribute */",
          "extern const uint8_t f_anim[N_ANIM][4][100];  /* a kind's 4 codes at a phase: each plane's 32 bytes, 4 attributes */",
          "extern const uint8_t f_tile_chars[N_TILEKINDS][4];",
@@ -405,6 +520,9 @@ def main():
          "#include <stdint.h>", '#include "gfxcodes.h"', '#include "gfxf18a.h"', "",
          words("f_pal_arena[64]", palette_words(A)), "",
          words("f_pal_menu[64]", palette_words(M)), "",
+         words("f_pal_title[64]", palette_words(T)), "",
+         carray("f_title_band[24][25]", enc_band), "",
+         carray("f_tlogo_cells[F_LOGO_CELLS][25]", enc_tlogo), "",
          carray("f_arena_cells[F_ARENA_CELLS][25]", enc_arena), ""]
     c.append("const uint8_t f_anim[N_ANIM][4][100] = {")
     for per in enc_anim:
@@ -433,6 +551,52 @@ def main():
     if preview:
         make_preview(preview, A, M, enc_arena, enc_anim, tile_chars, F_FLOOR, enc_logo, lmap,
                      enc_trophy, spr, big)
+        title_preview(preview, T, enc_band, enc_tlogo, lmap, spr)
+
+
+def title_preview(d, T, enc_band, enc_tlogo, lmap, spr):
+    """The title as src/nabu/gfx.c draws it (menus.c's layout)."""
+    from PIL import Image as PI
+    font = open(os.path.join(ROOT, "gfx", "namco.bin"), "rb").read()
+    img = PI.new("RGB", (256, 192))
+
+    def put(cx, cy, enc):
+        for i, c in enumerate(decode(enc, T)):
+            img.putpixel((cx * 8 + i % 8, cy * 8 + i // 8), c)
+
+    def glyph(r, ch):
+        e = list(enc_band[r])
+        g = ord(ch) - 32
+        for y in range(8):
+            f = font[g * 8 + y]
+            sh = TEXT_LINES[y]
+            for b in range(3):
+                e[b * 8 + y] = (e[b * 8 + y] & ~f & 255) | (f if sh >> b & 1 else 0)
+        return e
+
+    def text(r, s, width=36):
+        c0 = (width - len(s)) // 2 - 2
+        for k, ch in enumerate(s):
+            put(c0 + k, r, glyph(r, ch))
+    for r in range(24):
+        for c in range(32):
+            put(c, r, enc_band[r])
+    x0 = (32 - len(lmap[0])) // 2
+    for r in range(3):
+        for i, k in enumerate(lmap[r]):
+            put(x0 + i, 2 + r, enc_tlogo[k])
+    for k, ch in enumerate("FOR FUJINET"):
+        put(6 + (20 - 11) // 2 + k, 7, glyph(7, ch))
+    text(17, "PRESS FIRE")
+    text(20, "BOMBS AND BLASTS FOR 2-4")
+    text(22, "SYM: VIDEO F18A   ESC: QUIT")
+    for n in range(4):
+        x = (40 + n * 40) * 3 // 2
+        for yy, row in enumerate(spr[1]):
+            for xx, sl in enumerate(row):
+                if sl and x + xx < 256:
+                    img.putpixel((x + xx, 88 + yy), T[n][sl])
+    img.resize((768, 576), PI.NEAREST).save(os.path.join(d, "f18a-title.png"))
 
 
 def make_preview(d, A, M, enc_arena, enc_anim, tile_chars, F_FLOOR, enc_logo, lmap, enc_trophy, spr, big):

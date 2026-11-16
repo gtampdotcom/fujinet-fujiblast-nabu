@@ -36,6 +36,11 @@
  * (gfx_quit): a lock (any VR57 write after) turns the ECM3 sprites back
  * into outlines.
  *
+ * The F18A's title is VGA's: its own palette (f_pal_title), a night sky
+ * over dark ground, a tile a row (f_title_band, in every cell the logo
+ * leaves), and its text that row's tile with the letter in the row's
+ * shades (f_tglyph: gold on the sky, silver on the ground).
+ *
  * SYM switches the two at any time (gfx_toggle, from input.c): the codes
  * are laid out alike in both (the arena's cells and the logo get room for
  * the larger of the two), so the screen's name table, kept in RAM as it is
@@ -207,10 +212,9 @@ static uint8_t f18a_detect(void)
 
 /* A glyph's F18A cell: seat group by the TMS colour asked for, a shade a
  * line on entry 0; inverse (on a white band): dark on the orange group's light. */
-static void f_glyph(uint8_t *cell, uint8_t g, uint8_t fg, uint8_t bg)
+static void f_glyph(uint8_t *cell, const uint8_t *src, uint8_t fg, uint8_t bg)
 {
     uint8_t y, b, f, s, k, grp, inv = bg == WHITE;
-    const uint8_t *src = font_gfx + g * 8;
     if (inv)
         grp = 3;
     else if (fg == 15 || fg == 14)
@@ -238,13 +242,35 @@ static uint8_t next_code;               /* the next character free (0: none) */
 static uint16_t fc_key[FC_MAX];
 static uint8_t fc_code[FC_MAX], fc_n;
 static uint8_t logo_code, trophy_code, logo_row;
+static uint8_t band_code;               /* the F18A title's row tiles (0: not the title) */
+static uint8_t title_scr;               /* the title is showing (gfx_toggle leaves it to menus.c) */
+static uint8_t cur_row;                 /* the row a glyph is for (the title's) */
+
+/* A title glyph (key 8000h | glyph << 8 | row): its row's tile, the
+ * letter's pixels in the row group's shades. */
+static void f_tglyph(uint8_t *cell, const uint8_t *src, uint8_t row)
+{
+    uint8_t y, b, f, s;
+    memcpy(cell, f_title_band[row], 25);
+    for (y = 0; y < 8; ++y) {
+        f = src[y];
+        s = text_lines[y];
+        for (b = 0; b < 3; ++b)
+            cell[b * 8 + y] = (cell[b * 8 + y] & ~f) | ((s >> b) & 1 ? f : 0);
+    }
+}
 
 /* glyph key (glyph << 8 | fg << 4 | bg) as character c, the way we draw now */
 static void put_glyph(uint8_t c, uint16_t key)
 {
-    uint8_t cell[25], g = key >> 8, fg = (key >> 4) & 15, bg = key & 15;
+    uint8_t cell[25], g = (key >> 8) & 0x7F, fg = (key >> 4) & 15, bg = key & 15;
+    if (key & 0x8000) {                 /* the F18A title's */
+        f_tglyph(cell, font_gfx + g * 8, (uint8_t)key & 31);
+        put_fcell(c, cell, blanked);
+        return;
+    }
     if (f18a) {
-        f_glyph(cell, g, fg, bg);
+        f_glyph(cell, font_gfx + g * 8, fg, bg);
         put_fcell(c, cell, blanked);
     } else {
         memcpy(cell, font_gfx + g * 8, 8);
@@ -268,7 +294,11 @@ static uint8_t glyph_code(uint8_t g, uint8_t fg, uint8_t bg)
 {
     uint16_t key = (uint16_t)g << 8 | fg << 4 | bg;
     uint8_t i, c;
-    if (!g && bg == scr_bg)
+    if (band_code) {                    /* the F18A title: on the row's sky */
+        if (!g)
+            return band_code + cur_row;
+        key = 0x8000 | (uint16_t)g << 8 | cur_row;
+    } else if (!g && bg == scr_bg)
         return CH_PANEL;
     for (i = 0; i < fc_n; ++i)
         if (fc_key[i] == key)
@@ -316,7 +346,7 @@ static void charset_reset(uint8_t bg)
     put_blank(bg);
     next_code = 1;
     fc_n = 0;
-    logo_code = trophy_code = 0;
+    logo_code = trophy_code = band_code = title_scr = 0;
     arena_on = 0;
 }
 
@@ -462,6 +492,7 @@ void gfx_big_line(uint8_t row, const char *s, const uint8_t *colour)
 {
     uint8_t line[24], i, g;
     const uint8_t *p = pal[row_pal[row]];
+    cur_row = tms_row(row);
     for (i = 0; i < 24; ++i)
         line[i] = CH_PANEL;
     for (i = 0; i < 20; ++i) {
@@ -476,6 +507,7 @@ void gfx_text(uint8_t row, uint8_t col, const char *s, uint8_t colour)
     uint8_t line[32], n = 0, fg, bg, big = row_kind[row] == ROW_BIG;
     int16_t pos = big ? BIG_COL + col : (int16_t)col - TEXT_SHIFT, start = -1;
     const uint8_t *p = pal[row_pal[row]];
+    cur_row = tms_row(row);
     bg = p[0];
     if (big) {
         fg = p[1 + (colour & 3)];
@@ -498,6 +530,40 @@ void gfx_text(uint8_t row, uint8_t col, const char *s, uint8_t colour)
         vwrite(NT(tms_row(row), (uint8_t)start), line, n);
 }
 
+/* gfx_text half a cell (4 pixels) right, from cell column col of a BIG
+ * row (or text column col): each cell the right half of one letter and the
+ * left half of the next, n + 1 cells, made for it (a few, once a screen:
+ * the title's odd-length line, centred exactly). */
+void gfx_text_half(uint8_t row, uint8_t col, const char *s, uint8_t colour)
+{
+    uint8_t i, y, c, n = strlen(s), cell[25], pix[8], line[33];
+    const uint8_t *a, *b, *p = pal[row_pal[row]];
+    uint8_t fg = row_kind[row] == ROW_BIG ? p[1 + (colour & 3)] : p[1], bg = p[0];
+    int16_t pos = row_kind[row] == ROW_BIG ? BIG_COL + col : (int16_t)col - TEXT_SHIFT;
+    if (pos < 0 || pos + n > 31 || !(c = alloc_codes(n + 1)))
+        return;
+    cur_row = tms_row(row);
+    for (i = 0; i <= n; ++i) {
+        a = font_gfx + (i ? glyph_of(s[i - 1]) : 0) * 8;
+        b = font_gfx + (i < n ? glyph_of(s[i]) : 0) * 8;
+        for (y = 0; y < 8; ++y)
+            pix[y] = a[y] << 4 | b[y] >> 4;
+        if (band_code)
+            f_tglyph(cell, pix, cur_row);
+        else if (f18a)
+            f_glyph(cell, pix, fg, bg);
+        if (f18a) {
+            put_fcell(c + i, cell, blanked);
+        } else {
+            memcpy(cell, pix, 8);
+            memset(cell + 8, fg << 4 | bg, 8);
+            put_cell(c + i, cell, blanked);
+        }
+        line[i] = c + i;
+    }
+    vwrite(NT(cur_row, (uint8_t)pos), line, n + 1);
+}
+
 void gfx_number(uint8_t row, uint8_t col, uint8_t n, uint8_t colour)
 {
     char b[4], *p = b + 3;
@@ -512,12 +578,20 @@ void gfx_number(uint8_t row, uint8_t col, uint8_t n, uint8_t colour)
 void gfx_logo(uint8_t row)
 {
     uint8_t r, i, line[32], w = f18a ? F_LOGO_W : LOGO_W;
+    title_scr = 1;
+    if (f18a && !band_code && (band_code = alloc_codes(24)) != 0) {
+        f_palette(f_pal_title, 64);     /* (the screen is off: gfx_begin) */
+        for (r = 0; r < 24; ++r) {
+            put_fcell(band_code + r, f_title_band[r], blanked);
+            vfill(NT(r, 0), band_code + r, 32);
+        }
+    }
     if (!logo_code) {
         logo_code = alloc_codes(LOGO_CODES);
         if (logo_code) {
             if (f18a)
                 for (i = 0; i < F_LOGO_CELLS; ++i)
-                    put_fcell(logo_code + i, f_logo_cells[i], blanked);
+                    put_fcell(logo_code + i, band_code ? f_tlogo_cells[i] : f_logo_cells[i], blanked);
             else
                 for (i = 0; i < LOGO_CELLS; ++i)
                     put_cell(logo_code + i, logo_cells[i], blanked);
@@ -890,7 +964,10 @@ void gfx_toggle(void)
     if (!f18a) {
         vreg(49, 0);
         f_palette(tms_pal, 16);
-    } else {
+    }
+    if (title_scr)                      /* (menus.c's title sees f18a change: drawn again) */
+        return;
+    if (f18a) {
         f_palette(scr_bg == BLACK ? f_pal_arena : f_pal_menu, 64);
     }
     put_blank(scr_bg);
